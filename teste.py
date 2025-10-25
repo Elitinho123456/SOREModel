@@ -19,9 +19,12 @@ def decodificar(indices):
 
 # --- Pilar 2: Preparação dos Dados ---
 texto = "olá, mundo!"
+textoN = "oi, tchau!"
 tamanho_de_contexto = 3
 exemplos_x = []
+exemplos_xN = []
 exemplos_y = []
+exemplos_yN = []
 
 dados_codificados = codificar(texto)
 for i in range(len(dados_codificados) - tamanho_de_contexto): 
@@ -30,97 +33,21 @@ for i in range(len(dados_codificados) - tamanho_de_contexto):
     exemplos_x.append(x)
     exemplos_y.append(y)
 
+dados_codificadosN = codificar(textoN)
+for i in range(len(dados_codificadosN) - tamanho_de_contexto): 
+    x = dados_codificadosN[i : i + tamanho_de_contexto]
+    y = dados_codificadosN[i + tamanho_de_contexto]
+    exemplos_xN.append(x)
+    exemplos_yN.append(y)
+
 X_tensor = torch.tensor(exemplos_x, dtype=torch.long)
 Y_tensor = torch.tensor(exemplos_y, dtype=torch.long)
 
-# --- Pilar 3, 4, 5: Modelo, Perda e Otimizador ---
+X_tensorN = torch.tensor(exemplos_xN, dtype=torch.long)
+Y_tensorN = torch.tensor(exemplos_yN, dtype=torch.long)
 
-class SOREModel(nn.Module):
-    def __init__(self, tamanho_vocabulario, dimensao_embedding, tamanho_de_contexto):
-        super(SOREModel, self).__init__()
-        self.embedding = nn.Embedding(num_embeddings=tamanho_vocabulario, embedding_dim=dimensao_embedding)
-        dim_entrada_linear = tamanho_de_contexto * dimensao_embedding
-        self.camada_linear = nn.Linear(in_features=dim_entrada_linear, out_features=tamanho_vocabulario)
-
-    def forward(self, x):
-        embeddings = self.embedding(x)
-        embeddings_flat = embeddings.view(embeddings.shape[0], -1)
-        logits = self.camada_linear(embeddings_flat)
-        return logits
-
-    def predict(self, x):
-        logits = self.forward(x)
-        # Aplicamos softmax nos logits para obter probabilidades
-        probabilidades = torch.softmax(logits, dim=1) 
-        # Escolhemos o token com a maior probabilidade (amostragem "gulosa")
-        previsoes = torch.argmax(probabilidades, dim=1)
-        return previsoes
-
-# Instanciar tudo
-dimensao_embedding = 10
-modelo = SOREModel(tamanho_vocabulario, dimensao_embedding, tamanho_de_contexto)
-funcao_de_perda = nn.CrossEntropyLoss()
-otimizador = optim.AdamW(modelo.parameters(), lr=0.01) # Aumentei um pouco o lr para aprender mais rápido
-
-# --- Loop de Treinamento ---
-print("Iniciando treinamento...")
-for epoca in range(1000):
-    logits = modelo(X_tensor)
-    perda = funcao_de_perda(logits, Y_tensor)
-
-    otimizador.zero_grad()
-    perda.backward()
-    otimizador.step()
-
-    if epoca % 100 == 0:
-        print(f'Época {epoca}, Perda: {perda.item()}')
-        
-print(f"Treinamento concluído. Perda final: {perda.item()}")
-
-# --- Geração de Texto ---
-def gerar_texto(modelo, contexto_inicial, tamanho_de_contexto, quantos_novos_tokens):
-    modelo.eval() # Coloca o modelo em modo de avaliação
-    contexto_atual = contexto_inicial
-    
-    for _ in range(quantos_novos_tokens):
-        # Preparar a entrada
-        contexto_para_modelo = contexto_atual[-tamanho_de_contexto:]
-        tokens_entrada = codificar(contexto_para_modelo)
-        tensor_entrada = torch.tensor([tokens_entrada], dtype=torch.long)
-        
-        # Fazer a previsão
-        tokens_previstos_tensor = modelo.predict(tensor_entrada)
-        tokens_previstos_id = tokens_previstos_tensor.item()
-        
-        # Decodificar e atualizar
-        char_previsto = decodificar([tokens_previstos_id])
-        contexto_atual += char_previsto
-        
-    return contexto_atual
-
-# --- Teste! ---
-print("\n--- Gerando Texto ---")
-contexto_inicial = "olá"
-texto_gerado = gerar_texto(modelo, contexto_inicial, tamanho_de_contexto, 8)
-print(f"Contexto: '{contexto_inicial}'")
-print(f"Gerado:   '{texto_gerado}'")
-
-dim_entrada = 10 # Dimensão do embedding
-dim_saida_qkv = 10 # Dimensão de saída para Query, Key e Value
-
-camada_query = nn.Linear(in_features=dim_entrada, out_features=dim_saida_qkv)
-camada_key = nn.Linear(in_features=dim_entrada, out_features=dim_saida_qkv)
-camada_value = nn.Linear(in_features=dim_entrada, out_features=dim_saida_qkv)
-
-embbedings = [8,3,10] # Exemplo de tensor de embeddings com shape (batch_size=8, seq_len=3, dim_entrada=10)
-queries = camada_query(embbedings)
-keys = camada_key(embbedings)
-values = camada_value(embbedings)
-
-atencao = torch.matmul(queries, keys.transpose(-2, -1)) / (dim_saida_qkv ** 0.5)
-pesos_atencao = F.softmax(atencao, dim=-1)
-
-resultado_atencao = torch.matmul(pesos_atencao, values)
+X_tensor_final = torch.cat((X_tensor, X_tensorN), dim=0)
+Y_tensor_final = torch.cat((Y_tensor, Y_tensorN), dim=0)
 
 
 class atentionHead(nn.Module):
@@ -131,15 +58,23 @@ class atentionHead(nn.Module):
         self.camada_value = nn.Linear(in_features=dim_entrada, out_features=dim_saida_qkv)
         
     def forward(self, x):
+
+        B, T, C = x.shape  # Batch size, Tamanho da sequência, Dimensão de entrada
+
         Q = self.camada_query(x)
         K = self.camada_key(x)
         V = self.camada_value(x)
 
         dim_k = K.size(-1)
         pontuacoes = torch.matmul(Q, K.transpose(-2, -1)) / (dim_k ** 0.5)
-        pesos_atencao = F.softmax(pontuacoes, dim=-1)
+
+        mascara = torch.tril(torch.ones(T, T)).to(x.device)  # Máscara triangular inferior
+        pontuacoes_mascaradas = pontuacoes.masked_fill(mascara == 0, float('-inf'))
+
+        pesos_atencao = F.softmax(pontuacoes_mascaradas, dim=-1)
 
         saida = torch.matmul(pesos_atencao, V)
+
         return saida
     
 class MultiHeadAttention(nn.Module):
@@ -200,4 +135,97 @@ class SOREModel_v2(nn.Module):
         self.lm = nn.Linear(in_features=dim_embed, out_features=tamanho_vocab)
 
     def forward(self, x):
-        pass
+
+        B, T = x.shape # Batch size e Tamanho do contexto
+
+        token_embeds = self.token_embedding(x)
+        posicoes = torch.arange(T, device=x.device)
+        pos_embeds = self.position_embedding(posicoes)
+
+        embeds_com_posicao = token_embeds + pos_embeds
+
+        x = self.blocks(embeds_com_posicao)
+
+        x = self.lm_final(x)
+        x = self.lm(x)
+
+        return x
+    
+
+# --- Parâmetros para o SLM v2 (Transformer) ---
+dim_embed = 32          # Dimensão do embedding (um pouco maior que 10)
+num_heads = 4           # Número de cabeças de atenção
+num_layers = 2          # Número de blocos Transformer empilhados
+tamanho_contexto = 3    # Ainda estamos usando nosso contexto original
+tamanho_vocabulario = len(vocabulario) # Do nosso tokenizador
+
+
+modelo_v2 = SOREModel_v2(tamanho_vocabulario, dim_embed, tamanho_contexto, num_heads, num_layers)
+funcao_de_perda_v2 = nn.CrossEntropyLoss()
+otimizador_v2 = optim.AdamW(modelo_v2.parameters(), lr=0.001)
+
+# --- Loop de Treinamento para o SLM v2 ---
+print("\nIniciando treinamento do SLM v2 (Transformer)...")
+for epoca in range(1000):
+    logits = modelo_v2(X_tensor)
+    logits_apenas_do_ultimo_token = logits[:, -1, :]
+    perda = funcao_de_perda_v2(logits_apenas_do_ultimo_token, Y_tensor)
+
+    otimizador_v2.zero_grad()
+    perda.backward()
+    otimizador_v2.step()
+
+    if epoca % 100 == 0:
+        print(f'Época {epoca}, Perda: {perda.item()}')
+
+print(f"Treinamento do SLM v2 concluído. Perda final: {perda.item()}")
+
+# --- Fase 2: Solve (ajuste fino) ---
+
+print("\nFase 2: Ajuste fino do modelo com novos dados...")
+
+for epoca in range(1000):
+    logits = modelo_v2(X_tensor_final)
+    logits_apenas_do_ultimo_token = logits[:, -1, :]
+    perda = funcao_de_perda_v2(logits_apenas_do_ultimo_token, Y_tensor_final)
+
+    otimizador_v2.zero_grad()
+    perda.backward()
+    otimizador_v2.step()
+
+    if epoca % 100 == 0:
+        print(f'Época {epoca}, Perda: {perda.item()}')
+
+print(f"Ajuste fino concluído. Perda final: {perda.item()}")
+
+
+def gerar_texto_v2(modelo, contexto_inicial, tamanho_de_contexto, quantos_novos_tokens):
+    modelo.eval() # Coloca o modelo em modo de avaliação
+    contexto_atual = contexto_inicial
+    
+    for _ in range(quantos_novos_tokens):
+        # Preparar a entrada
+        contexto_para_modelo = (contexto_atual[-tamanho_de_contexto:]).rjust(tamanho_de_contexto, ' ')
+        tokens_entrada = codificar(contexto_para_modelo)
+        tensor_entrada = torch.tensor([tokens_entrada], dtype=torch.long)
+        
+        # Fazer a previsão
+        logits = modelo(tensor_entrada)
+        logits_finais = logits[:, -1, :]
+        probabilidades = torch.softmax(logits_finais, dim=1) 
+        token_previsto_id = torch.argmax(probabilidades, dim=1).item()
+        
+        # Adicionar o token previsto ao contexto atual
+        char_previsto = decodificar([token_previsto_id])
+        contexto_atual += char_previsto
+
+    return contexto_atual
+
+# --- Teste do SLM v2 após ajuste fino ---
+contexto_inicial = "olá"
+contexto_gerado = gerar_texto_v2(modelo_v2, contexto_inicial, tamanho_contexto, 8)
+print(f"Contexto gerado: {contexto_gerado}")
+
+contexto_inicial = "oi"
+contexto_gerado = gerar_texto_v2(modelo_v2, contexto_inicial, tamanho_contexto, 8)
+print(f"Contexto gerado: {contexto_gerado}")
