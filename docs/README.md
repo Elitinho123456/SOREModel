@@ -110,30 +110,30 @@ print(f"Texto gerado: {texto_gerado}")
 
 ```
 SOREModel/
-├── src/                    # Código fonte principal
-│   ├── core/              # Funcionalidades básicas
-│   │   ├── tokenizer.py   # Tokenização de texto
+├── src/                        # Código fonte principal
+│   ├── core/                   # Funcionalidades básicas
+│   │   ├── tokenizer.py        # Tokenização de texto
 │   │   └── __init__.py
-│   ├── models/            # Arquiteturas de modelo
-│   │   ├── soreModel_v2.py # Modelo Transformer v2
+│   ├── models/                 # Arquiteturas de modelo
+│   │   ├── soreModel_v2.py     # Modelo Transformer v2
 │   │   └── __init__.py
-│   ├── training/          # Treinamento e ajuste fino
-│   │   ├── trainer.py     # Classe Trainer
+│   ├── training/               # Treinamento e ajuste fino
+│   │   ├── trainer.py          # Classe Trainer
 │   │   └── __init__.py
-│   ├── generation/        # Geração de texto
-│   │   ├── text_generator.py # Classe TextGenerator
+│   ├── generation/             # Geração de texto
+│   │   ├── text_generator.py   # Classe TextGenerator
 │   │   └── __init__.py
-│   └── __init__.py        # Módulo principal
-├── tests/                 # Testes
-│   ├── test_soremodel_v2.py # Testes completos
-│   └── soreModel_v1_teste.py # Testes da v1
-├── examples/              # Exemplos de uso
-├── docs/                  # Documentação adicional
-├── scripts/               # Scripts utilitários
-├── data/                  # Dados (se necessário)
-├── requirements.txt       # Dependências
-├── README.md             # Este arquivo
-└── LICENSE               # Licença
+│   └── __init__.py             # Módulo principal
+├── tests/                      # Testes
+│   ├── test_soremodel_v2.py    # Testes completos
+│   └── soreModel_v1_teste.py   # Testes da v1
+├── examples/                   # Exemplos de uso
+├── docs/                       # Documentação adicional
+├── scripts/                    # Scripts utilitários
+├── data/                       # Dados (se necessário)
+├── requirements.txt            # Dependências
+├── README.md                   # Este arquivo
+└── LICENSE                     # Licença
 ```
 
 ## 🔧 API Reference
@@ -207,7 +207,7 @@ texto = gerador.gerar_texto(
 texto = gerador.gerar_texto_beam_search("olá", beam_width=3)
 
 # Completar texto
-texto = gerador.completar_texto("incompleto", max_completar=10)
+texto = gerador.completar_texto("texto-incompleto", max_completar=10)
 ```
 
 ## 🧪 Executando Testes
@@ -296,9 +296,9 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 ## 📧 Contato
 
 - **Projeto**: SOREModel
-- **Versão**: 2.0.0
+- **Versão**: 2.0.0 BETA
 - **Autor**: SOREModel Team
-- **Issues**: [GitHub Issues](https://github.com/seu-username/SOREModel/issues)
+- **Issues**: [GitHub Issues](https://github.com/Elitinho123456/SOREModel/issues)
 
 ## 🙏 Agradecimentos
 
@@ -312,6 +312,6 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 
 **Feito com ❤️ pela comunidade open-source**
 
-[⭐ Star](https://github.com/seu-username/SOREModel) | [🐛 Reportar Bug](https://github.com/seu-username/SOREModel/issues) | [💬 Discussões](https://github.com/seu-username/SOREModel/discussions)
+[⭐ Star](https://github.com/Elitinho123456/SOREModel) | [🐛 Reportar Bug](https://github.com/Elitinho123456/SOREModel/issues) | [💬 Discussões](https://github.com/Elitinho123456/SOREModel/discussions)
 
 </div>
