@@ -1,0 +1,18 @@
+# Core dependencies
+torch>=1.9.0
+numpy>=1.21.0
+
+# Web scraping (optional)
+requests>=2.25.1
+beautifulsoup4>=4.9.3
+
+# Development and testing
+pytest>=6.2.4
+pytest-cov>=2.12.1
+
+# Documentation (optional)
+sphinx>=4.0.0
+sphinx-rtd-theme>=0.5.2
+
+# Type checking (optional)
+mypy>=0.910
