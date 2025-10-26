@@ -80,8 +80,8 @@ class SOREModel_v2(nn.Module):
     def __init__(self, tamanho_vocab, dim_embed, tamanho_contexto, num_heads, num_layers):
         super(SOREModel_v2, self).__init__()                                                                 # Inicializa a classe pai nn.Module
 
-        self.token_embedding = nn.Embedding(num_embeddings=tamanho_vocab, embedding_dim=dim_embed)             # Embedding para tokens do vocabulário
-        self.position_embedding = nn.Embedding(num_embeddings=tamanho_contexto, embedding_dim=dim_embed)      # Embedding para posições
+        self.token_embedding = nn.Embedding(num_embeddings=tamanho_vocab, embedding_dim=dim_embed)           # Embedding para tokens do vocabulário
+        self.position_embedding = nn.Embedding(num_embeddings=tamanho_contexto, embedding_dim=dim_embed)     # Embedding para posições
         self.blocks = nn.Sequential(                                                                         # Sequência de blocos Transformer
             *[Block(num_heads, dim_embed, dim_embed // num_heads) for _ in range(num_layers)]
         )

@@ -2,10 +2,11 @@
 Módulo de Treinamento para o SOREModel
 Implementa funções para treinamento e ajuste fino do modelo
 """
-
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import time
 
 class Trainer:
     """Classe para gerenciar o treinamento do modelo"""
@@ -19,6 +20,9 @@ class Trainer:
             tokenizer: Tokenizer para processar os dados
             device: Dispositivo para treinamento (cpu ou cuda)
         """
+        
+        print("Iniciando modulo de treinamento...")
+
         self.modelo = modelo
         self.tokenizer = tokenizer
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -28,6 +32,13 @@ class Trainer:
         self.funcao_perda = nn.CrossEntropyLoss()
         self.otimizador = None
         self.historico_perdas = []
+
+    def _formatar_tempo(self, segundos):
+        """Formata segundos em HH:MM:SS"""
+        horas = int(segundos // 3600)
+        minutos = int((segundos % 3600) // 60)
+        seg = int(segundos % 60)
+        return f"{horas:02}:{minutos:02}:{seg:02}"
 
     def configurar_otimizador(self, learning_rate=0.001, weight_decay=0.01):
         """
@@ -54,14 +65,14 @@ class Trainer:
         Returns:
             tuple: (X_tensor, Y_tensor) - Tensores preparados
         """
-        exemplos_x, exemplos_y = self.tokenizer.encode_batch(textos, contexto_tamanho)
+        np_x, np_y = self.tokenizer.encode_batch(textos, contexto_tamanho)
 
-        X_tensor = torch.tensor(exemplos_x, dtype=torch.long)
-        Y_tensor = torch.tensor(exemplos_y, dtype=torch.long)
+        X_tensor = torch.from_numpy(np_x).long()
+        Y_tensor = torch.from_numpy(np_y).long()
 
         return X_tensor.to(self.device), Y_tensor.to(self.device)
 
-    def treinar(self, textos, contexto_tamanho, num_epocas=1000, batch_size=32, learning_rate=0.001):
+    def treinar(self, textos, contexto_tamanho, num_epocas, batch_size, learning_rate):
         """
         Treina o modelo com os dados fornecidos
 
@@ -72,16 +83,24 @@ class Trainer:
             batch_size (int): Tamanho do batch
             learning_rate (float): Taxa de aprendizado
         """
-        # Preparar dados
         X_tensor, Y_tensor = self.preparar_dados(textos, contexto_tamanho)
 
-        # Configurar otimizador
         self.configurar_otimizador(learning_rate)
 
         print(f"Iniciando treinamento com {len(X_tensor)} exemplos...")
+        print(f"Verificanado se há modelo salvo...")
+
+        if os.path.exists("modelo_checkpoint.pth"):
+            self.carregar_modelo("modelo_checkpoint.pth")
+            print("Modelo carregado com sucesso.")
+        else:
+            print("Nenhum modelo salvo encontrado. Começando treinamento do zero.")
+
         print(f"Dispositivo: {self.device}")
 
         self.modelo.train()
+
+        training_start_time = time.time()
 
         for epoca in range(num_epocas):
             # Embaralhar dados
@@ -111,15 +130,33 @@ class Trainer:
                 perda_epoca += perda.item()
                 num_batches += 1
 
+                if num_batches % 500 == 0:
+                    print(f"Epoca {epoca+1}/{num_epocas}, Batch {num_batches}/{len(X_embaralhado)//batch_size}, Perda: {perda.item():.4f}")
+
             # Calcular perda média da época
             perda_media = perda_epoca / num_batches
             self.historico_perdas.append(perda_media)
 
             # Log progress
-            if (epoca + 1) % 100 == 0:
-                print(f'Época {epoca+1}/{num_epocas}, Perda: {perda_media:.4f}')
+            if epoca % 100 == 0:
+                # --- Lógica de ETA ---
+                tempo_decorrido = time.time() - training_start_time
+                epocas_passadas = epoca + 1
+                tempo_medio_por_epoca = tempo_decorrido / epocas_passadas
+                epocas_restantes = num_epocas - epocas_passadas
+                eta_segundos = tempo_medio_por_epoca * epocas_restantes
+                eta_formatada = self._formatar_tempo(eta_segundos)
+                # --- Fim da Lógica de ETA ---
 
+                # Print com mais detalhes
+                print(f'Época [{epoca+1}/{num_epocas}], Perda: {perda_media:.4f}, ETA: {eta_formatada}')
+            
+            if epoca % 1000 == 0:
+                self.salvar_modelo(f"modelo_checkpoint.pth")
+
+        tempo_total = time.time() - training_start_time
         print(f"Treinamento concluído. Perda final: {self.historico_perdas[-1]:.4f}")
+        print(f"Tempo total de treinamento: {self._formatar_tempo(tempo_total)}")
 
     def ajustar_fino(self, textos_novos, contexto_tamanho, num_epocas=1000, batch_size=32):
         """
@@ -150,6 +187,8 @@ class Trainer:
         print(f"Ajuste fino com {len(X_combinado)} exemplos totais...")
 
         self.modelo.train()
+        
+        finetune_start_time = time.time()
 
         for epoca in range(num_epocas):
             # Embaralhar dados
@@ -184,10 +223,22 @@ class Trainer:
             self.historico_perdas.append(perda_media)
 
             # Log progress
-            if (epoca + 1) % 100 == 0:
-                print(f'Época {epoca+1}/{num_epocas}, Perda: {perda_media:.4f}')
+            if epoca % 100 == 0:
+                # --- Lógica de ETA ---
+                tempo_decorrido = time.time() - finetune_start_time
+                epocas_passadas = epoca + 1
+                tempo_medio_por_epoca = tempo_decorrido / epocas_passadas
+                epocas_restantes = num_epocas - epocas_passadas
+                eta_segundos = tempo_medio_por_epoca * epocas_restantes
+                eta_formatada = self._formatar_tempo(eta_segundos)
+                # --- Fim da Lógica de ETA ---
+                
+                # Print com mais detalhes
+                print(f'Época [{epoca+1}/{num_epocas}], Perda: {perda_media:.4f}, ETA: {eta_formatada}')
 
+        tempo_total = time.time() - finetune_start_time
         print(f"Ajuste fino concluído. Perda final: {self.historico_perdas[-1]:.4f}")
+        print(f"Tempo total de ajuste fino: {self._formatar_tempo(tempo_total)}")
 
     def salvar_modelo(self, caminho):
         """Salva o modelo treinado"""

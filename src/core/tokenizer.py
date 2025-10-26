@@ -3,6 +3,10 @@ Módulo de Tokenização para o SOREModel
 Implementa funcionalidades de codificação e decodificação de texto
 """
 
+import numpy as np
+from utils import criar_vocabulario_de_caracteres
+
+
 class Tokenizer:
     """Tokenizer simples para caracteres"""
 
@@ -16,14 +20,8 @@ class Tokenizer:
         """
         if vocabulario is None:
             # Define um vocabulário padrão com caracteres comuns
-            self.modelo_conhecimento = [
-                'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
-                'Á','À','Ã','Â','Ä','É','È','Ê','Ë','Í','Ì','Î','Ï','Ó','Ò','Õ','Ô','Ö','Ú','Ù','Û','Ü','Ç',
-                'a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z',
-                'á','à','ã','â','ä','é','è','ê','ë','í','ì','î','ï','ó','ò','õ','ô','ö','ú','ù','û','ü','ç',
-                ' ',' ',' ',' ',' ',' ',  # Espaços múltiplos para dar mais peso
-                ',','!','.','?',';','\n'
-            ]
+            self.modelo_conhecimento = criar_vocabulario_de_caracteres()
+
         else:
             self.modelo_conhecimento = vocabulario
 
@@ -47,7 +45,14 @@ class Tokenizer:
             list: Lista de índices correspondentes aos caracteres
         """
         try:
-            return [self.stoi[char] for char in texto]
+            tokens = []
+            for char in texto:
+                if char in self.stoi:
+                    tokens.append(self.stoi[char])
+                else:
+                    print(f"Aviso: caracter '{repr(char)}' ignorado (não está no vocabulário)")
+                    continue
+            return tokens
         except KeyError as e:
             raise ValueError(f"Caracter '{e.args[0]}' não encontrado no vocabulário")
 
@@ -64,7 +69,7 @@ class Tokenizer:
         try:
             return ''.join([self.itos[i] for i in indices])
         except KeyError as e:
-            raise ValueError(f"Índice '{e.args[0]}' não encontrado no vocabulário")
+            raise ValueError(f"Índice {e.args[0]} não encontrado no vocabulário")
 
     def get_vocab_size(self):
         """Retorna o tamanho do vocabulário"""
@@ -76,36 +81,44 @@ class Tokenizer:
 
     def encode_batch(self, textos, contexto_tamanho):
         """
-        Codifica múltiplos textos e gera exemplos de treinamento
+        Codifica múltiplos textos e gera exemplos de treinamento (Versão otimizada com NumPy)
 
         Args:
             textos (list): Lista de textos para processar
             contexto_tamanho (int): Tamanho do contexto para cada exemplo
 
         Returns:
-            tuple: (X_tensor, Y_tensor) - Tensores de entrada e saída
+            tuple: (np_x, np_y) - Arrays NumPy de entrada e saída
         """
-        exemplos_x = []
-        exemplos_y = []
-
+        tokens_juntos = []
         for texto in textos:
-            dados_codificados = self.codificar(texto)
-            for i in range(len(dados_codificados) - contexto_tamanho):
-                x = dados_codificados[i : i + contexto_tamanho]
-                y = dados_codificados[i + contexto_tamanho]
-                exemplos_x.append(x)
-                exemplos_y.append(y)
+            tokens_juntos.extend(self.codificar(texto))
+        
+        dados_np = np.array(tokens_juntos, dtype=np.int64)
 
-        return exemplos_x, exemplos_y
+        num_exemplos = len(dados_np) - contexto_tamanho
+        if num_exemplos <= 0:
+            print("Aviso: Dados insuficientes para criar exemplos com o contexto fornecido.")
+            return np.array([]), np.array([]) # Retorna arrays vazios
+
+        np_x = np.zeros((num_exemplos, contexto_tamanho), dtype=np.int64)
+        np_y = np.zeros(num_exemplos, dtype=np.int64)
+
+        for i in range(num_exemplos):
+            np_x[i] = dados_np[i : i + contexto_tamanho]
+            np_y[i] = dados_np[i + contexto_tamanho]
+
+        return np_x, np_y
 
 
-def criar_tokenizer_basico():
+def criar_tokenizer_basico(simbolos=None):
     """Cria um tokenizer com vocabulário básico otimizado"""
-    caracteres_comuns = [
-        'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
-        'a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z',
-        'á','à','ã','â','ä','é','è','ê','ë','í','ì','î','ï','ó','ò','õ','ô','ö','ú','ù','û','ü','ç',
-        ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',  # Múltiplos espaços
-        ',','!','.','?',';','\n','\t'
-    ]
+
+    if not simbolos:
+        print("Nenhum símbolo adicional fornecido. Usando vocabulário básico padrão.")
+
+        caracteres_comuns = criar_vocabulario_de_caracteres()
+    else:
+        caracteres_comuns = simbolos
+
     return Tokenizer(caracteres_comuns)
