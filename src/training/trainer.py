@@ -102,6 +102,9 @@ class Trainer:
 
         training_start_time = time.time()
 
+        # Acumulação de gradiente para batches maiores
+        passos_acumulacao = 8
+
         for epoca in range(num_epocas):
             # Embaralhar dados
             indices = torch.randperm(len(X_tensor))
@@ -110,6 +113,8 @@ class Trainer:
 
             perda_epoca = 0
             num_batches = 0
+
+            self.otimizador.zero_grad()
 
             # Treinamento em mini-batches
             for i in range(0, len(X_embaralhado), batch_size):
@@ -121,17 +126,19 @@ class Trainer:
                 logits_ultimo_token = logits[:, -1, :]  # Apenas o último token
 
                 perda = self.funcao_perda(logits_ultimo_token, batch_Y)
+                perda = perda / passos_acumulacao
 
-                # Backward pass
-                self.otimizador.zero_grad()
                 perda.backward()
-                self.otimizador.step()
 
-                perda_epoca += perda.item()
+                perda_epoca += perda.item() * passos_acumulacao
                 num_batches += 1
+                # Backward pass
+                if num_batches % 8 == 0:
+                    self.otimizador.step()
+                    self.otimizador.zero_grad()
 
-                if num_batches % 500 == 0:
-                    print(f"Epoca {epoca+1}/{num_epocas}, Batch {num_batches}/{len(X_embaralhado)//batch_size}, Perda: {perda.item():.4f}")
+                    if num_batches % 500 == 0:
+                        print(f"Epoca {epoca+1}/{num_epocas}, Batch {num_batches}/{len(X_embaralhado)//batch_size}, Perda: {perda.item():.4f}")
 
             # Calcular perda média da época
             perda_media = perda_epoca / num_batches

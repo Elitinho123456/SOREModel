@@ -4,7 +4,7 @@ import os
 
 sys.path.append('src') 
 
-from src import Trainer, SOREModel_v2, criar_tokenizer_basico
+from src import Trainer, SOREModel_v2, Tokenizer
 
 caminho_dados = os.path.join('data', 'corpus_completo.json')
 print(f"Carregando dados do corpus local: {caminho_dados}...")
@@ -22,7 +22,7 @@ print(f"Dados carregados: {len(textos_treinamento)} artigos.")
 
 
 print("Configurando modelo e tokenizador...")
-tokenizador = criar_tokenizer_basico()
+tokenizador = Tokenizer()
 
 # Usando as configurações recomendadas (contexto maior)
 CONTEXTO_TAMANHO = 128

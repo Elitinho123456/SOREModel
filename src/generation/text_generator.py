@@ -108,53 +108,111 @@ class TextGenerator:
         Returns:
             str: Melhor texto gerado
         """
-        # Implementação simplificada - em produção seria mais otimizada
-        candidatos = [contexto_inicial]
+        # Versão otimizada: processamento em batch dos beams não finalizados,
+        # uso de log-probs e manutenção de beams finalizados como candidatos.
+
+        # Codificar contexto inicial
+        encoded_context = self.tokenizer.codificar(contexto_inicial)
+        if len(encoded_context) == 0:
+            return contexto_inicial
+
+        # Configurações úteis
+        device = self.device
+        model = self.modelo
+        max_context = getattr(model, 'tamanho_contexto', None)
+        pad_id = getattr(self.tokenizer, 'pad_token_id', 0)
+        eos_id = getattr(self.tokenizer, 'eos_token_id', None)
+
+        # Inicializar beams como lista de (token_list, score, finished_flag)
+        beams = [(encoded_context[:max_context] if max_context else encoded_context, 0.0, False)]
 
         with torch.no_grad():
             for _ in range(max_length):
-                novos_candidatos = []
+                # Separar beams finalizados e não finalizados
+                finished_candidates = []
+                to_expand_idx = []
+                for i, (seq, score, finished) in enumerate(beams):
+                    if finished:
+                        # manter como candidato estático
+                        finished_candidates.append((seq, score, True))
+                    else:
+                        to_expand_idx.append(i)
 
-                for candidato in candidatos:
-                    if len(candidato) == 0:
-                        continue
+                # Se não houver beams para expandir, terminar
+                if not to_expand_idx:
+                    # escolher o melhor entre os finalizados
+                    best = max(finished_candidates, key=lambda x: x[1]) if finished_candidates else beams[0]
+                    return self.tokenizer.decodificar(best[0])
 
-                    # Preparar entrada
-                    contexto_codificado = self.tokenizer.codificar(candidato)
-                    max_context = getattr(self.modelo, 'tamanho_contexto', len(contexto_codificado))
-                    if len(contexto_codificado) > max_context:
-                        contexto_codificado = contexto_codificado[-max_context:]
+                # Preparar batch das sequências a expandir
+                batch_seqs = [beams[i][0] for i in to_expand_idx]
+                lengths = [len(s) for s in batch_seqs]
+                batch_max_len = max(lengths)
 
-                    tensor_entrada = torch.tensor([contexto_codificado], dtype=torch.long).to(self.device)
+                # Truncar se necessário ao tamanho do contexto do modelo
+                if max_context and batch_max_len > max_context:
+                    # manter apenas últimos tokens para cada sequência
+                    batch_seqs = [s[-max_context:] for s in batch_seqs]
+                    lengths = [len(s) for s in batch_seqs]
+                    batch_max_len = max(lengths)
 
-                    # Fazer previsão
-                    logits = self.modelo(tensor_entrada)
-                    logits_ultimo_token = logits[:, -1, :]
+                # Criar tensor padded (direção: right padding)
+                batch_tensor = torch.full((len(batch_seqs), batch_max_len), pad_id, dtype=torch.long, device=device)
+                for i, s in enumerate(batch_seqs):
+                    if len(s) > 0:
+                        batch_tensor[i, : len(s)] = torch.tensor(s, dtype=torch.long, device=device)
 
-                    # Pegar top beam_width tokens
-                    probs = torch.softmax(logits_ultimo_token, dim=-1)
-                    top_probs, top_indices = torch.topk(probs, beam_width)
+                # Chamar o modelo em batch
+                logits = model(batch_tensor)  # (batch, seq_len, vocab)
+                # obter logits do último token real para cada entrada
+                idxs = torch.tensor([l - 1 for l in lengths], device=device)
+                batch_idx = torch.arange(len(batch_seqs), device=device)
+                last_logits = logits[batch_idx, idxs, :]  # (batch, vocab)
 
-                    for i in range(beam_width):
-                        prob = top_probs[0, i].item()
-                        token_idx = top_indices[0, i].item()
-                        next_char = self.tokenizer.decodificar([token_idx])
+                # log-probabilidades
+                log_probs = torch.log_softmax(last_logits, dim=-1)  # (batch, vocab)
 
-                        if prob > 0:  # Só adicionar se probabilidade for significativa
-                            novos_candidatos.append((candidato + next_char, prob))
+                # Pegar topk por sequência (beam_width)
+                topk_vals, topk_inds = torch.topk(log_probs, k=beam_width, dim=-1)  # ambos (batch, beam_width)
 
-                # Manter apenas os beam_width melhores candidatos
-                if len(novos_candidatos) > beam_width:
-                    novos_candidatos.sort(key=lambda x: x[1], reverse=True)
-                    candidatos = [c[0] for c in novos_candidatos[:beam_width]]
-                else:
-                    candidatos = [c[0] for c in novos_candidatos]
+                # Construir candidatos: combinar beams finalizados + expansões
+                candidates = []
+                # adicionar beams finalizados como candidatos diretos
+                for seq, score, finished in finished_candidates:
+                    candidates.append((seq, score, True))
 
-                if not candidatos:
+                # adicionar expansões das sequências não finalizadas
+                for local_i, global_i in enumerate(to_expand_idx):
+                    orig_seq, orig_score, _ = beams[global_i]
+                    for k in range(topk_inds.size(1)):
+                        token_id = int(topk_inds[local_i, k].item())
+                        token_logprob = float(topk_vals[local_i, k].item())
+                        new_seq = orig_seq + [token_id]
+                        new_score = orig_score + token_logprob
+                        # verificar se este token finalizou a sequência
+                        is_finished = False
+                        if eos_id is not None:
+                            is_finished = (token_id == eos_id)
+                        else:
+                            # fallback: decodificar token isolado e checar caracteres de parada
+                            token_str = self.tokenizer.decodificar([token_id])
+                            if token_str in ['\n', '\0']:
+                                is_finished = True
+                        candidates.append((new_seq, new_score, is_finished))
+
+                # Selecionar os melhores beam_width candidatos por score
+                if not candidates:
+                    break
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                beams = candidates[:beam_width]
+
+                # Parar cedo se todos os beams estiverem finalizados
+                if all(finished for (_, _, finished) in beams):
                     break
 
-        # Retornar o melhor candidato (primeiro da lista ordenada por probabilidade)
-        return candidatos[0] if candidatos else contexto_inicial
+        # Retornar a melhor sequência encontrada
+        best_seq = max(beams, key=lambda x: x[1])[0]
+        return self.tokenizer.decodificar(best_seq)
 
     def completar_texto(self, texto_incompleto, max_completar=20):
         """

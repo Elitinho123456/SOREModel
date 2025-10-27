@@ -3,7 +3,7 @@ SOREModel - Simple Open-Source Recurrent/Transformer Model
 Módulo principal do projeto SOREModel
 """
 
-from .core import Tokenizer, criar_tokenizer_basico
+from .core import Tokenizer
 from .models import SOREModel_v2, atentionHead, MultiHeadAttention, Block
 from .training import Trainer
 from .generation import TextGenerator
@@ -15,7 +15,6 @@ __description__ = "Simple Open-Source Recurrent/Transformer Model for text gener
 __all__ = [
     # Core
     'Tokenizer',
-    'criar_tokenizer_basico',
     # Models
     'SOREModel_v2',
     'atentionHead',
