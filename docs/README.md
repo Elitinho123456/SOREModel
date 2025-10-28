@@ -1,14 +1,22 @@
-# SOREModel v2
+# SOREModel
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
 **SOREModel** (Simple Open-Source Recurrent/Transformer Model) é uma biblioteca Python para criação e treinamento de modelos de linguagem baseados em Transformers. Implementado do zero para fins educacionais e de pesquisa.
 
+## 🚀 Novidades na Versão 3.0
+
+- 🆕 **SOREModel v3** com arquitetura avançada
+- 🧠 Suporte a **ALiBi** (Attention with Linear Biases)
+- 🔄 **RoPE** (Rotary Positional Embeddings)
+- ⚡ **Otimizações de desempenho** com PyTorch
+- 📊 Suporte a **Weights & Biases** para monitoramento
+
 ## ✨ Características
 
-- 🧠 **Arquitetura Transformer completa** implementada do zero
-- 🔧 **Múltiplas versões**: v1 (simples) e v2 (Transformer avançado)
+- 🧠 **Arquitetura Transformer avançada** implementada do zero
+- 🔧 **Múltiplas versões**: v1 (simples), v2 (Transformer básico) e v3 (avançado com ALiBi e RoPE)
 - 🎯 **Fácil de usar** com API limpa e intuitiva
 - 📚 **Bem documentada** com exemplos completos
 - 🚀 **Otimizada** para treinamento e inferência
@@ -23,7 +31,11 @@
 
 ### Instalação via pip
 ```bash
+# Dependências básicas
 pip install -r requirements.txt
+
+# Para treinamento (inclui suporte a GPU e W&B)
+pip install -r requirements-train.txt
 ```
 
 ### Instalação do PyTorch
@@ -35,7 +47,100 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
-## 🚀 Uso Rápido
+## 🚀 Uso Rápido com v3
+
+### 1. Treinamento do Modelo v3
+```bash
+# Treinar com configurações padrão
+python scripts/train_sore_v3.py --use_wandb
+
+# Treinar com parâmetros personalizados
+python scripts/train_sore_v3.py \
+  --dataset_name "seu_dataset" \
+  --batch_size 32 \
+  --context_size 1024 \
+  --epochs 10 \
+  --learning_rate 6e-4 \
+  --output_dir ./checkpoints \
+  --use_wandb
+```
+
+### 2. Carregando o Modelo v3
+```python
+from src.models.soreModel_v3 import SOREModel_v5, ModelConfig
+
+# Configuração do modelo
+config = ModelConfig(
+    vocab_size=50000,       # Tamanho do vocabulário
+    context_size=1024,      # Tamanho do contexto
+    embed_dim=768,          # Dimensão dos embeddings
+    num_heads=12,           # Número de cabeças de atenção
+    num_layers=12,          # Número de camadas
+    dropout=0.1,            # Dropout
+    use_alibi=True,         # Usar ALiBi
+    use_rmsnorm=True        # Usar RMSNorm
+)
+
+# Criar modelo
+model = SOREModel_v5(config)
+
+# Carregar pesos treinados (opcional)
+checkpoint = torch.load('checkpoints/final_model/model.pt')
+model.load_state_dict(checkpoint['model_state_dict'])
+```
+
+### 3. Geração de Texto com v3
+```python
+# Configuração de geração
+generation_config = {
+    'max_length': 100,      # Comprimento máximo da geração
+    'temperature': 0.7,     # Temperatura para amostragem
+    'top_k': 50,            # Top-k sampling
+    'top_p': 0.9,           # Nucleus sampling
+    'repetition_penalty': 1.2  # Penalidade de repetição
+}
+
+# Gerar texto
+input_text = "Olá, como vai"
+generated = model.generate(
+    input_text, 
+    **generation_config
+)
+print(generated)
+```
+
+## 🏗️ Estrutura do Projeto Atualizada
+
+```
+SOREModel/
+├── src/                        
+│   ├── models/
+│   │   ├── soreModel_v2.py     # Modelo Transformer v2
+│   │   ├── soreModel_v3.py     # Modelo Transformer v3 (ALiBi + RoPE)
+│   │   └── __init__.py
+│   └── ...
+├── scripts/
+│   ├── train_sore_v3.py       # Script de treinamento v3
+│   └── ...
+├── checkpoints/               # Checkpoints dos modelos
+├── requirements-train.txt     # Dependências para treinamento
+└── ...
+```
+
+## 📊 Monitoramento com Weights & Biases
+
+O script de treinamento inclui suporte nativo para o Weights & Biases. Para usar:
+
+1. Instale o W&B:
+```bash
+pip install wandb
+wandb login
+```
+
+2. Execute o treinamento com `--use_wandb`
+3. Acompanhe as métricas em tempo real no [wandb.ai](https://wandb.ai)
+
+## 🚀 Uso Rápido (Versões Anteriores)
 
 ### 1. Importação Básica
 ```python
@@ -106,7 +211,7 @@ texto_gerado = gerador.gerar_texto(
 print(f"Texto gerado: {texto_gerado}")
 ```
 
-## 📁 Estrutura do Projeto
+## 📁 Estrutura do Projeto (Versões Anteriores)
 
 ```
 SOREModel/

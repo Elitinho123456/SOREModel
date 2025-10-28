@@ -5,8 +5,9 @@ Implementa funcionalidades de codificação e decodificação de texto
 
 from tokenizers import Tokenizer as TTK
 import numpy as np
+import os
 
-TTKconfig = 'tokenizer/sore_bpe_tokenizer.json'
+TTKconfig = os.path.join(os.path.dirname(__file__), 'tokenizer', 'sore_bpe_tokenizer.json')
 
 class Tokenizer:
     def __init__(self, tokenizer_path=TTKconfig):
