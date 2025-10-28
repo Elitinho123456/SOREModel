@@ -24,15 +24,11 @@ if os.path.basename(caminho_projeto) == 'src':
 sys.path.insert(0, caminho_projeto)
 
 try:
-
     from src.models.soreModel_v3 import SOREModel_v3, ModelConfig
-
-    from src.core.tokenizer_pipeline import build_and_save_tokenizer
-
-    from tokenizers import Tokenizer
+    from transformers import AutoTokenizer
 except ImportError as e:
     print(f"Erro ao importar módulos: {e}")
-    print("Verifique se os arquivos 'soreModel_v3.py' e 'tokenizer_pipeline.py' estão acessíveis no sys.path.")
+    print("Verifique se 'torch', 'datasets' e 'transformers' estão instalados.")
     print(f"Caminho do projeto atual: {caminho_projeto}")
     sys.exit(1)
 
@@ -45,10 +41,8 @@ def parse_args():
                         help='Configuração do dataset')
     parser.add_argument('--output_dir', type=str, default='./checkpoints_v3',
                         help='Diretório para salvar os checkpoints')
-    parser.add_argument('--tokenizer_dir', type=str, default='./tokenizer',
-                        help='Diretório para salvar/carregar o tokenizador BPE')
-    parser.add_argument('--vocab_size', type=int, default=52000,
-                        help='Tamanho do vocabulário para o tokenizador BPE')
+    parser.add_argument('--tokenizer_name', type=str, default='gpt2',
+                        help='Nome do tokenizador pré-treinado do HuggingFace (ex: gpt2)')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='Tamanho do lote para treinamento')
     parser.add_argument('--context_size', type=int, default=512,
@@ -83,45 +77,32 @@ def parse_args():
 
 class ConjuntoDeDadosTexto(Dataset):
     """
-    Dataset que usa o tokenizador BPE da HuggingFace.
-    Ele lida com a tokenização, truncamento e padding.
+    Dataset que tokeniza textos sob demanda usando um tokenizador do Hugging Face.
     """
     def __init__(self, textos, tokenizer, tamanho_maximo):
         self.textos = textos
         self.tokenizer = tokenizer
         self.tamanho_maximo = tamanho_maximo
-        
-        # Obter pad_id do tokenizer (definido em tokenizer_pipeline.py como "<|pad|>")
-        self.pad_token_str = "<|pad|>"
-        self.pad_id = self.tokenizer.token_to_id(self.pad_token_str)
-        
-        if self.pad_id is None:
-            print(f"Aviso: Token de padding '{self.pad_token_str}' não encontrado. Usando token ID 0.")
-            self.pad_id = 0
-            self.pad_token_str = self.tokenizer.id_to_token(0) or "[PAD]"
-            
-        print(f"Dataset usando padding com ID: {self.pad_id} ('{self.pad_token_str}')")
 
     def __len__(self):
         return len(self.textos)
     
     def __getitem__(self, idx):
         texto = self.textos[idx]
-        if not texto or not texto.strip(): # Lidar com textos vazios
-            return torch.full((self.tamanho_maximo,), self.pad_id, dtype=torch.long)
-            
-        # Tokeniza
-        tokens = self.tokenizer.encode(texto).ids
+        if not texto or not texto.strip():
+            texto = self.tokenizer.eos_token  # Usa token de fim de texto para entradas vazias
+
+        # Tokeniza o texto
+        saida = self.tokenizer(
+            texto,
+            truncation=True,
+            padding='max_length',
+            max_length=self.tamanho_maximo,
+            return_tensors='pt'  # Retorna tensores PyTorch
+        )
         
-        # Trunca se for maior
-        if len(tokens) > self.tamanho_maximo:
-            tokens = tokens[:self.tamanho_maximo]
-        
-        # Preenche se for menor
-        if len(tokens) < self.tamanho_maximo:
-            tokens = tokens + [self.pad_id] * (self.tamanho_maximo - len(tokens))
-            
-        return torch.tensor(tokens, dtype=torch.long)
+        # Retorna os input_ids, removendo a dimensão do lote
+        return saida['input_ids'].squeeze(0)
 
 def obter_taxa_aprendizado(passo, passos_aquecimento, taxa_aprendizado_max, total_passos_decay=1000000):
     """Scheduler: Aquecimento linear e depois decaimento linear."""
@@ -129,8 +110,6 @@ def obter_taxa_aprendizado(passo, passos_aquecimento, taxa_aprendizado_max, tota
     if passo < passos_aquecimento:
         return taxa_aprendizado_max * (passo / passos_aquecimento)
     
-    # Decaimento linear após o aquecimento
-    # Garante que não decaia abaixo de uma fração da taxa máxima (ex: 10%)
     progresso_decay = (passo - passos_aquecimento) / max(1, total_passos_decay - passos_aquecimento)
     fator_decay = max(0.1, 1.0 - progresso_decay)
     
@@ -144,45 +123,31 @@ def treinar_epoca(modelo, carregador_dados, otimizador, dispositivo, epoca, args
     barra_progresso = tqdm(carregador_dados, desc=f'Época {epoca + 1}', leave=False)
     
     for indice_lote, lote in enumerate(barra_progresso):
-        # Move o lote para o dispositivo
         entradas = lote.to(dispositivo)
         
-        # Obtém as saídas do modelo
-        # Usa precisão mista (AMP) se o escalador estiver disponível (CUDA)
         with torch.amp.autocast(device_type=dispositivo.type, enabled=(escalador is not None)):
             saidas = modelo(entradas) # (B, T, Vocab)
             
-            # Prepara logits e rótulos para CrossEntropyLoss
-            # Logits: (B, T-1, V) -> (B*(T-1), V)
-            # Rótulos: (B, T) -> (B*(T-1),)
-            # Nós prevemos o próximo token, então deslocamos
             logits_deslocados = saidas[..., :-1, :].contiguous()
             rotulos_deslocados = entradas[..., 1:].contiguous()
             
-            # Calcula a perda
             funcao_perda = nn.CrossEntropyLoss()
             perda = funcao_perda(
                 logits_deslocados.view(-1, logits_deslocados.size(-1)),
                 rotulos_deslocados.view(-1)
             )
             
-            # Ajusta a perda para acumulação de gradiente
             perda = perda / args.gradient_accumulation_steps
         
-        # Passo de retropropagação
         if escalador is not None:
             escalador.scale(perda).backward()
         else:
             perda.backward()
         
-        # Atualiza os pesos
         if (indice_lote + 1) % args.gradient_accumulation_steps == 0:
-            # Atualiza a taxa de aprendizado antes do passo do otimizador
             taxa_atual = obter_taxa_aprendizado(passo_global, args.warmup_steps, args.learning_rate)
             for grupo in otimizador.param_groups:
                 grupo['lr'] = taxa_atual
-
-            # Recorte de gradiente
             if escalador is not None:
                 escalador.unscale_(otimizador) # Desescala gradientes
                 torch.nn.utils.clip_grad_norm_(modelo.parameters(), 1.0) # Clip
@@ -195,13 +160,11 @@ def treinar_epoca(modelo, carregador_dados, otimizador, dispositivo, epoca, args
             otimizador.zero_grad()
             passo_global += 1
         
-        # Atualiza a barra de progresso
         perda_item_acumulada = perda.item() * args.gradient_accumulation_steps
         perda_total += perda_item_acumulada
         perda_media = perda_total / (indice_lote + 1)
         barra_progresso.set_postfix({'perda': f'{perda_media:.4f}', 'lr': f'{taxa_atual:.2e}'})
         
-        # Log no Weights & Biases
         if args.use_wandb and passo_global % 10 == 0 and (indice_lote + 1) % args.gradient_accumulation_steps == 0:
             import wandb
             wandb.log({
@@ -212,7 +175,6 @@ def treinar_epoca(modelo, carregador_dados, otimizador, dispositivo, epoca, args
                 'passo_global': passo_global
             })
         
-        # Salva checkpoint
         if passo_global > 0 and passo_global % args.save_steps == 0 and (indice_lote + 1) % args.gradient_accumulation_steps == 0:
             salvar_checkpoint(modelo, otimizador, passo_global, args, f'checkpoint_passo_{passo_global}')
     
@@ -275,41 +237,18 @@ def main():
             
         print(f'Carregado {len(textos_treinamento)} documentos de texto')
         
-        # --- INÍCIO DA CORREÇÃO DO TOKENIZADOR ---
+        # --- Carregando o tokenizador GPT-2 ---
+        print(f"Carregando tokenizador '{args.tokenizer_name}' do Hugging Face...")
+        tokenizador = AutoTokenizer.from_pretrained(args.tokenizer_name)
         
-        caminho_tokenizer_dir = Path(args.tokenizer_dir)
-        caminho_tokenizer_json = caminho_tokenizer_dir / 'tokenizer.json'
-        
-        # Verifica se o tokenizador BPE já existe
-        if not caminho_tokenizer_json.exists():
-            print(f"Tokenizador BPE não encontrado em {caminho_tokenizer_json}.")
-            print("Preparando dados para treinar o tokenizador BPE...")
-            
-            # Salva os textos em um arquivo temporário para o treinamento do tokenizador
-            caminho_textos_temp = caminho_tokenizer_dir / 'dados_treinamento_temp.txt'
-            caminho_tokenizer_dir.mkdir(parents=True, exist_ok=True)
-            
-            with open(caminho_textos_temp, 'w', encoding='utf-8') as f:
-                for texto in tqdm(textos_treinamento, desc="Salvando textos para tokenizer"):
-                    f.write(texto + '\n')
-            
-            print('Treinando tokenizador BPE (isso pode demorar)...')
-            build_and_save_tokenizer(
-                [str(caminho_textos_temp)], 
-                vocab_size=args.vocab_size, 
-                save_dir=str(caminho_tokenizer_dir)
-            )
-            # Remove o arquivo temporário
-            os.remove(caminho_textos_temp)
-        else:
-            print(f"Carregando tokenizador BPE existente de {caminho_tokenizer_json}...")
-        
-        # Carrega o tokenizador BPE (HuggingFace)
-        tokenizador = Tokenizer.from_file(str(caminho_tokenizer_json))
-        tamanho_vocabulario = tokenizador.get_vocab_size()
-        print(f"Tokenizador BPE carregado. Vocabulário: {tamanho_vocabulario}")
-        
-        # --- FIM DA CORREÇÃO DO TOKENIZADOR ---
+        # O GPT-2 não tem um token de padding por padrão, então usamos o token de fim de sentença
+        if tokenizador.pad_token is None:
+            tokenizador.pad_token = tokenizador.eos_token
+            print(f"Token de padding não definido. Usando '{tokenizador.pad_token}' (ID: {tokenizador.pad_token_id})")
+
+        tamanho_vocabulario = len(tokenizador)
+        print(f"Tokenizador carregado. Vocabulário: {tamanho_vocabulario}")
+        # --- Fim do carregamento do tokenizador ---
         
         # Cria o conjunto de dados
         conjunto_dados = ConjuntoDeDadosTexto(textos_treinamento, tokenizador, args.context_size)
@@ -325,7 +264,7 @@ def main():
         
         # Configuração do modelo
         configuracao = ModelConfig(
-            vocab_size=tamanho_vocabulario, # CORRIGIDO: usa o vocab do BPE
+            vocab_size=tamanho_vocabulario, # Usa o tamanho do vocabulário do tokenizador carregado
             context_size=args.context_size,
             embed_dim=args.embed_dim,
             num_heads=args.num_heads,

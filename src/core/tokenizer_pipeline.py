@@ -37,6 +37,28 @@ def build_and_save_tokenizer(text_paths, vocab_size=52000, save_dir="./tokenizer
     tokenizer.save(str(Path(save_dir) / "tokenizer.json"))
     print("Saved tokenizer to", save_dir)
 
+
+def load_tokenizer(tokenizer_dir):
+    """
+    Carrega um tokenizador BPE salvo.
+    
+    Args:
+        tokenizer_dir: Diretório contendo o arquivo tokenizer.json
+        
+    Returns:
+        Tokenizer: Instância do tokenizador carregado
+    """
+    from tokenizers import Tokenizer
+    import os
+    
+    tokenizer_path = os.path.join(tokenizer_dir, "tokenizer.json")
+    if not os.path.exists(tokenizer_path):
+        raise FileNotFoundError(f"Arquivo do tokenizador não encontrado em {tokenizer_path}")
+        
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    return tokenizer
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--texts", nargs="+", required=True, help="Paths to text files or directories")

@@ -41,13 +41,30 @@ class TextGenerator:
 
         with torch.no_grad():
             for _ in range(max_length):
-                # Preparar entrada
-                contexto_codificado = self.tokenizer.codificar(contexto_atual)
+                # Codificar o texto usando o tokenizer
+                try:
+                    # Tenta usar o método encode do tokenizer (para tokenizers do HuggingFace)
+                    if hasattr(self.tokenizer, 'encode'):
+                        encoding = self.tokenizer.encode(contexto_atual)
+                        contexto_codificado = encoding.ids
+                    # Se não tiver encode, tenta chamar diretamente (para compatibilidade com versões mais antigas)
+                    else:
+                        encoding = self.tokenizer(contexto_atual)
+                        contexto_codificado = encoding.input_ids
+                except Exception as e:
+                    print(f"Erro ao codificar o texto: {e}")
+                    break
+
                 if len(contexto_codificado) == 0:
                     break
 
                 # Usar apenas os últimos tokens se o contexto for muito longo
-                max_context = getattr(self.modelo, 'tamanho_contexto', len(contexto_codificado))
+                max_context = getattr(self.modelo, 'cfg', None)
+                if max_context is not None and hasattr(max_context, 'context_size'):
+                    max_context = max_context.context_size
+                else:
+                    max_context = 1024  # Valor padrão
+                
                 if len(contexto_codificado) > max_context:
                     contexto_codificado = contexto_codificado[-max_context:]
 
@@ -87,11 +104,24 @@ class TextGenerator:
                 next_token_idx = torch.multinomial(probs, num_samples=1).item()
 
                 # Decodificar e adicionar ao contexto
-                next_char = self.tokenizer.decodificar([next_token_idx])
-                contexto_atual += next_char
+                try:
+                    # Usa o método de decodificação do tokenizador, que é mais robusto
+                    token_gerado = self.tokenizer.decode([next_token_idx], skip_special_tokens=False)
+
+                    # O tokenizador ByteLevel BPE pode gerar o prefixo 'Ġ' para espaços.
+                    # Esta lógica ajuda a formatar o texto de forma mais limpa.
+                    if token_gerado.startswith('Ġ'):
+                        # Adiciona um espaço e o resto do token
+                        contexto_atual += ' ' + token_gerado[1:]
+                    else:
+                        contexto_atual += token_gerado
+
+                except Exception as e:
+                    print(f"\nERRO ao decodificar o token {next_token_idx}: {e}")
+                    break
 
                 # Parar se gerar token de fim (se existir)
-                if next_char in ['\n', '\0']:
+                if token_gerado in ['\n', '\0']:
                     break
 
         return contexto_atual
@@ -112,14 +142,32 @@ class TextGenerator:
         # uso de log-probs e manutenção de beams finalizados como candidatos.
 
         # Codificar contexto inicial
-        encoded_context = self.tokenizer.codificar(contexto_inicial)
+        try:
+            if hasattr(self.tokenizer, 'encode'):
+                encoding = self.tokenizer.encode(contexto_inicial)
+                encoded_context = encoding.ids
+            else:
+                encoding = self.tokenizer(contexto_atual)
+                encoded_context = encoding.input_ids
+        except Exception as e:
+            print(f"Erro ao codificar o texto: {e}")
+            return contexto_inicial
+
         if len(encoded_context) == 0:
             return contexto_inicial
 
         # Configurações úteis
         device = self.device
         model = self.modelo
-        max_context = getattr(model, 'tamanho_contexto', None)
+        
+        # Obter tamanho máximo do contexto da configuração do modelo
+        model_config = getattr(model, 'cfg', None)
+        if model_config is not None and hasattr(model_config, 'context_size'):
+            max_context = model_config.context_size
+        else:
+            max_context = 1024  # Valor padrão
+            
+        # Obter IDs especiais do tokenizer
         pad_id = getattr(self.tokenizer, 'pad_token_id', 0)
         eos_id = getattr(self.tokenizer, 'eos_token_id', None)
 
@@ -195,9 +243,17 @@ class TextGenerator:
                             is_finished = (token_id == eos_id)
                         else:
                             # fallback: decodificar token isolado e checar caracteres de parada
-                            token_str = self.tokenizer.decodificar([token_id])
-                            if token_str in ['\n', '\0']:
-                                is_finished = True
+                            try:
+                                if hasattr(self.tokenizer, 'decode'):
+                                    token_str = self.tokenizer.decode([token_id])
+                                else:
+                                    token_str = self.tokenizer.decode([token_id])
+                                
+                                if token_str in ['\n', '\0']:
+                                    is_finished = True
+                            except Exception as e:
+                                print(f"Erro ao decodificar token: {e}")
+                                is_finished = False
                         candidates.append((new_seq, new_score, is_finished))
 
                 # Selecionar os melhores beam_width candidatos por score
@@ -212,7 +268,14 @@ class TextGenerator:
 
         # Retornar a melhor sequência encontrada
         best_seq = max(beams, key=lambda x: x[1])[0]
-        return self.tokenizer.decodificar(best_seq)
+        try:
+            if hasattr(self.tokenizer, 'decode'):
+                return self.tokenizer.decode(best_seq)
+            else:
+                return self.tokenizer.decode(best_seq)
+        except Exception as e:
+            print(f"Erro ao decodificar a sequência: {e}")
+            return ""
 
     def completar_texto(self, texto_incompleto, max_completar=20):
         """
