@@ -11,13 +11,25 @@ LOG_LEVEL = "INFO"
 
 # Configurações do modelo padrão
 DEFAULT_MODEL_CONFIG = {
-    'dim_embed': 64,
-    'tamanho_contexto': 16,
-    'num_heads': 8,
-    'num_layers': 4,
-    'learning_rate': 0.001,
-    'batch_size': 4,
-    'num_epocas': 1000
+    'dim_embed': 768,        # Updated to v3/v4 default
+    'tamanho_contexto': 1024,
+    'num_heads': 12,
+    'num_layers': 12,
+    'learning_rate': 6e-4,
+    'batch_size': 8,
+    'num_epocas': 10
+}
+
+# Configurações de Treino Avançado
+TRAINING_CONFIG = {
+    'use_amp': True,
+    'lr_scheduler': "cosine", # options: "none", "step", "cosine"
+    'warmup_steps': 500,
+    'early_stopping_patience': 3,
+    'min_delta': 0.0,
+    'num_workers': 4,       # Adjust based on CPU
+    'pin_memory': True,
+    'prefetch_factor': 2
 }
 
 # Configurações de geração de texto

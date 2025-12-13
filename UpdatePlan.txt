@@ -1,0 +1,448 @@
+Visão geral update SOREModel_v4
+Este documento descreve o pipeline de treinamento do SOREModel v3 como um modelo de linguagem pequeno (SLM) com técnicas modernas de treinamento usadas em LLMs, incluindo pré‑treinamento autoregressivo, distilação teacher–student e fine‑tuning supervisionado por instruções. O objetivo é permitir a criação de uma “LLM caseira” eficiente, alinhada a um modelo teacher maior, mas com custo de inferência e hardware reduzidos.​
+
+Arquitetura de treinamento
+Student: SOREModel v3 (modelo pequeno definido no repositório, usado para treino e geração via TextGenerator).​
+
+Teacher: modelo maior acessível via API, checkpoint local (ex.: LLaMA, Qwen, Gemma, Mistral) ou HuggingFace, usado para gerar rótulos “suaves” (logits/respostas) e dados de instrução.​
+
+Componentes principais:
+
+Trainer atual para treino autoregressivo.​
+
+Novas extensões: TeacherClient (cliente do modelo teacher) e DistillationTrainer (loop de treino KD).​
+
+Fases do pipeline
+Pré‑treinamento autoregressivo (base)
+
+Objetivo: fazer o SOREModel v3 aprender estatística básica da língua e padrões de tokenização usando datasets brutos (texto contínuo).​
+
+Implementação: extensão do script existente scripts/train.py, permitindo um modo --stage pretrain com parâmetros como --dataset_name, --context_size, --epochs, --batch_size, --learning_rate e --output_dir.​
+
+Distilação teacher–student (KD)
+
+Objetivo: aproximar o comportamento do SOREModel v3 ao de um teacher maior, reduzindo tamanho/custo mas preservando capacidade.​
+
+Estratégia: para cada prompt ou segmento de texto, obter saída do teacher (logits ou respostas) e treinar o student para imitar, combinando perda clássica de linguagem com perda de distilação.​
+
+Instruction tuning (SFT)
+
+Objetivo: adaptar o modelo distilado para seguir instruções em formato chat/comando, usando pares (instrução, resposta).​
+
+Fonte de dados:
+
+Conjuntos abertos de instruções em português/inglês.
+
+Dados gerados pelo próprio teacher a partir de instruções customizadas (self‑instruct).​
+
+Alinhamento leve (opcional)
+
+Objetivo: refinar preferências de resposta (educado, conciso, seguro), usando métodos mais leves que RLHF completo, como DPO/ORPO com pares “resposta preferida vs. não preferida”.​
+
+Novas estruturas de código propostas
+1. Módulo TeacherClient
+Arquivo sugerido: soremodel/teacher_client.py.
+
+Responsabilidade: encapsular o acesso ao modelo teacher, seja via API HTTP (OpenAI, Ollama, vLLM), chamada local ou pela biblioteca HuggingFace.​
+
+Interface proposta (em alto nível, documentação):
+
+class TeacherClient:
+
+__init__(self, endpoint: str, api_key: str | None = None, model_name: str | None = None, temperature: float = 0.7, max_tokens: int = 256)
+
+Define parâmetros de conexão, nome do modelo teacher e configuração de geração.
+
+gerar_resposta(self, prompt: str) -> str
+
+Recebe um prompt (instrução ou contexto) e retorna texto gerado pelo teacher.
+
+(Opcional se tiver acesso a logits) gerar_logits(self, tokens: List[int]) -> np.ndarray
+
+Recebe tokens de entrada e retorna logits/probabilidades do teacher para distilação mais rica.
+
+2. Módulo DistillationTrainer
+Arquivo sugerido: soremodel/distillation_trainer.py.
+
+Responsabilidade: implementar o loop de treinamento teacher–student reutilizando a lógica do Trainer atual (otimizador, epochs, batch, etc.), mas incorporando a perda de distilação.​
+
+Interface proposta:
+
+class DistillationTrainer:
+
+__init__(self, student_model, tokenizer, teacher_client: TeacherClient, device: str = "cuda")
+
+Recebe o modelo aluno, tokenizer compartilhado (ou compatível) e o client do teacher.
+
+treinar(self, dataset, num_epocas: int, batch_size: int, learning_rate: float, alpha: float = 0.5, temperature: float = 1.0)
+
+Para cada batch:
+
+Gera inputs (prompts) a partir do dataset.
+
+Obtém respostas do teacher (texto ou logits).
+
+Calcula:
+
+loss_lm: cross‑entropy padrão usando os tokens alvo.
+
+loss_kd: divergência entre distribuições do student e do teacher (quando logits disponíveis).
+
+Perda final: loss = alpha * loss_lm + (1 - alpha) * loss_kd.
+
+3. Extensão do Trainer existente
+No módulo atual de treino (onde existe algo como trainer.treinar(...)), documentar:
+
+treinar_lm(...): treino autoregressivo clássico (fase de pré‑treino).​
+
+treinar_kd(...): chamar internamente um DistillationTrainer quando se quer distilação.
+
+treinar_sft(...): loop semelhante ao LM, mas com dados de instrução; a entrada é o prompt + resposta concatenados em um template fixo (por exemplo, "<user> ... <assistant> ...").​
+
+Novos scripts de linha de comando
+scripts/train.py (atualizado)
+Adicionar argumento --stage com valores possíveis: pretrain, sft.
+
+Exemplo de uso (documentado no README):
+
+Pré‑treino:
+
+python scripts/train.py --stage pretrain --dataset_name "meu_corpus" --batch_size 32 --context_size 1024 --epochs 10 --learning_rate 6e-4 --output_dir ./checkpoints_pretrain​
+
+Instruction tuning:
+
+python scripts/train.py --stage sft --dataset_name "meu_dataset_instrucoes" --batch_size 16 --context_size 2048 --epochs 3 --learning_rate 1e-4 --output_dir ./checkpoints_sft.​
+
+scripts/distill_sore_v3.py (novo)
+Script dedicado à distilação teacher–student.
+
+Parâmetros propostos:
+
+--teacher_endpoint (URL da API ou pipe local).
+
+--teacher_model_name.
+
+--teacher_huggingface.
+
+--dataset_name (prompts usados para distilação).
+
+--alpha (peso da loss LM vs KD).
+
+--temperature (temperatura para logits/saída do teacher).
+
+--batch_size, --epochs, --learning_rate, --output_dir.
+
+Exemplo de uso documentado:
+
+python scripts/distill_sore_v3.py --teacher_endpoint http://localhost:8000 --teacher_model_name mistral-7b --dataset_name "prompts_portugues" --alpha 0.5 --temperature 1.0 --batch_size 16 --epochs 5 --learning_rate 3e-4 --output_dir ./checkpoints_distill.​
+
+Formato de dados
+Pré‑treino
+Arquivos de texto contínuo ou JSONL com campo "text".
+
+Tokenização usando o tokenizer já integrado no SOREModel v3, com context_size configurável (ex.: 512, 1024, 2048).​
+
+Distilação
+Dataset de prompts ou segmentos, formato simples:
+
+JSONL com campos "prompt" ou "input".
+
+Teacher gera:
+
+Texto completo como resposta, que é tokenizado e usado como alvo.
+
+Opcionalmente, logits se a API fornecer.
+
+Instruction tuning
+JSONL com campos típicos:
+
+"instruction", "input", "output" (ou equivalente).
+
+Template definido e documentado, por exemplo:
+
+"<user>\n{instruction}\n\n<assistant>\n{output}".
+
+Roadmap de implementação
+Criar diretório docs/ e adicionar este relatório em docs/treinamento_soremodel_v3.md.
+
+Implementar TeacherClient com uma primeira integração simples (ex.: API HTTP que devolve apenas texto).
+
+Implementar DistillationTrainer reaproveitando estrutura do Trainer.
+
+Atualizar train.py para suportar --stage pretrain e --stage sft.
+
+Criar distill_sore_v3.py com CLI básica.
+
+Atualizar o README.md com:
+
+Seções “Pré‑treino”, “Distilação Teacher–Student” e “Instruction Tuning v3”.
+
+Exemplos de comando e trechos de código minimalistas.
+
+1. Weight tying (compartilhar embeddings)
+Objetivo: reduzir parâmetros e memória compartilhando a matriz de embedding com a camada de saída.
+
+Onde mexer: src/models/soreModel_v4.py (classe SOREModel_v4, onde você define nn.Embedding e o lm_head/camada de logits).
+
+Passos:
+
+Certifique-se de que:
+
+Dimensão dos embeddings = dimensão do hidden do Transformer.
+
+Vocabulário da saída é o mesmo da embedding.
+
+Após criar o lm_head, faça algo como:
+
+self.lm_head.weight = self.embedding.weight
+
+Documentação sugerida (docs/performance.md):
+
+Seção “Weight Tying” explicando:
+
+Requisitos (mesmo vocab_size e embed_dim).
+
+Benefício: menos parâmetros e leve melhora de generalização em SLMs.​
+
+2. AMP (mixed precision) no treino
+Objetivo: acelerar treino em GPU com torch.cuda.amp, sem degradar a qualidade.​
+
+Onde mexer: scripts/train.py (loop de treino) e config.py.
+
+Passos de código:
+
+Em config.py, adicione uma flag:
+
+use_amp: bool = True
+
+Em train.py:
+
+Crie um GradScaler: scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
+
+No loop:
+
+Envolva o forward e loss com torch.cuda.amp.autocast(enabled=config.use_amp):
+
+Use scaler.scale(loss).backward(), scaler.step(optimizer) e scaler.update()
+
+Se use_amp for False, rode o fluxo padrão.
+
+Docs:
+
+Seção “Treinando com AMP”:
+
+Como ativar: python scripts/train.py --use_amp.
+
+Recomendação: só em GPU com suporte a Tensor Cores.
+
+3. Schedulers de learning rate
+Objetivo: melhorar convergência e permitir menos épocas com mesma qualidade.​
+
+Onde mexer: scripts/train.py e config.py.
+
+Passos:
+
+Em config.py:
+
+lr_scheduler: str = "cosine" (opções: "none", "step", "cosine"…).
+
+Hyperparams extras: lr_step_size, lr_gamma, max_steps/epochs conforme o scheduler.
+
+Em train.py:
+
+Após criar o optimizer, crie o scheduler com base na config.
+
+No fim de cada epoch ou step, chame scheduler.step().
+
+No README/performance:
+
+Tabela simples com exemplos:
+
+"cosine" → recomendado para treinos longos.
+
+"step" → útil para reduzir LR após “plateau”.
+
+4. Early stopping + best checkpoint
+Objetivo: parar treino quando validação parar de melhorar e sempre salvar o melhor modelo.​
+
+Onde mexer: scripts/train.py.
+
+Passos:
+
+Durante o loop:
+
+Mantenha best_val_loss e patience_counter.
+
+Sempre que val_loss melhorar, salve:
+
+checkpoints/best_model/model.pt
+
+Se val_loss não melhorar por patience épocas, encerre o treino.
+
+Config em config.py:
+
+early_stopping_patience: int = 3
+
+min_delta: float = 0.0
+
+Docs:
+
+Seção “Early Stopping”:
+
+Explicar flags --early_stopping_patience e --min_delta.
+
+Diferenciar best_model de final_model.
+
+5. DataLoader otimizado
+Objetivo: reduzir gargalo de I/O de dados.​
+
+Onde mexer: script(s) de treino que constroem DataLoader (train.py ou módulo de dataset em src).
+
+Passos:
+
+Ao criar o DataLoader:
+
+num_workers > 0 (ex.: 4–8, de acordo com CPU).
+
+pin_memory=True se estiver em GPU.
+
+prefetch_factor adequado (ex.: 2–4).
+
+Adicionar flags em config.py:
+
+num_workers, pin_memory, prefetch_factor.
+
+Docs:
+
+Seção “Configurações de DataLoader” com tabela:
+
+tiny_cpu → num_workers=0, pin_memory=False
+
+gpu_padrao → num_workers=4, pin_memory=True
+
+6. Otimizações PyTorch (backend)
+Objetivo: aproveitar melhor o backend da GPU.​
+
+Onde mexer: início do script principal (run_train.py ou train.py).
+
+Passos:
+
+No setup:
+
+torch.backends.cudnn.benchmark = True se os tamanhos de input forem fixos.
+
+Opcionalmente testar torch.set_float32_matmul_precision("medium") em GPUs recentes.
+
+Para versões futuras de PyTorch:
+
+Expor flag para tentar torch.compile(model) quando suportado.
+
+Docs:
+
+Seção “Configuração de backend”:
+
+Aviso sobre primeiras iterações mais lentas por causa de auto-tuning.
+
+Como desativar via flag se algo der problema.
+
+7. Quantização para inferência
+Objetivo: oferecer caminho “slim” para uso em CPU, mantendo checkpoint full-precision para treino.​
+
+Onde mexer: novo script em scripts/, ex.: quantize_sore_v3.py.
+
+Passos:
+
+Script:
+
+Carrega o checkpoint (model.pt).
+
+Converte com API de quantização (ex.: torch.quantization.quantize_dynamic em linear layers).
+
+Salva como checkpoints/quantized/model_quantized.pt.
+
+No docs/performance.md:
+
+Seção “Quantização para Inferência”.
+
+Explicar:
+
+Recomendado para CPU.
+
+Não usar essa versão para continuar treinando.
+
+8. Export para ONNX
+Objetivo: habilitar uso em ONNX Runtime / TensorRT para latência menor.​
+
+Onde mexer: novo script scripts/export_onnx_sore_v3.py.
+
+Passos:
+
+Script:
+
+Carrega modelo.
+
+Cria input dummy (torch.randint com shape [1, context_size]).
+
+Usa torch.onnx.export com nomes de inputs/outputs definidos.
+
+Docs:
+
+Seção “Exportando para ONNX”.
+
+Comando:
+
+python scripts/export_onnx_sore_v3.py --checkpoint checkpoints/final_model/model.pt --output sore_v3.onnx
+
+9. Treino distribuído (DDP básico)
+Objetivo: permitir multi-GPU sem quebrar a simplicidade.​
+
+Onde mexer: criar variante do script: scripts/train_ddp.py.
+
+Passos:
+
+Inicializar torch.distributed com init_process_group.
+
+Usar DistributedDataParallel em torno do modelo.
+
+Usar DistributedSampler para o DataLoader.
+
+Expor variável de ambiente ou flags:
+
+WORLD_SIZE, RANK, LOCAL_RANK (padrão PyTorch/torchrun).
+
+Docs:
+
+Seção “Treino Multi-GPU”.
+
+Exemplo:
+
+torchrun --nproc_per_node=2 scripts/train_ddp.py --config ...
+
+10. Hyperparameter sweeps e presets
+Objetivo: facilitar testes sistemáticos de performance.​
+
+Onde mexer: novo script scripts/hparam_sweep.py e presets em config.py ou configs/*.yaml.
+
+Passos:
+
+Criar presets em um módulo de config:
+
+tiny_cpu, small_gpu, max_quality, etc.
+
+hparam_sweep.py:
+
+Recebe uma lista de combinações (grid ou random).
+
+Para cada combinação, chama train.py como subprocess ou função.
+
+Docs:
+
+Seção “Presets de Configuração”.
+
+Tabela com:
+
+tiny_cpu → embed_dim menor, batch pequeno, sem AMP.
+
+small_gpu → AMP, batch maior, scheduler cosine.
+
+max_quality → maior embed_dim, batch, mais épocas, scheduler cosine.
