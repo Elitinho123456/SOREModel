@@ -1,270 +1,168 @@
-"""
-Módulo de Treinamento para o SOREModel
-Implementa funções para treinamento e ajuste fino do modelo
-"""
 import os
+import time
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import time
+from pathlib import Path
+from tqdm import tqdm
 
 class Trainer:
-    """Classe para gerenciar o treinamento do modelo"""
+    """
+    Trainer class for SOREModel.
+    Handles the training loop, evaluation, and checkpoint saving.
+    """
 
-    def __init__(self, modelo, tokenizer, device=None):
-        """
-        Inicializa o trainer
-
-        Args:
-            modelo: Modelo SOREModel a ser treinado
-            tokenizer: Tokenizer para processar os dados
-            device: Dispositivo para treinamento (cpu ou cuda)
-        """
-        
-        print("Iniciando modulo de treinamento...")
-
-        self.modelo = modelo
+    def __init__(self, model, tokenizer, args, device=None):
+        self.model = model
         self.tokenizer = tokenizer
+        self.args = args
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.modelo.to(self.device)
-
-        # Configurações padrão
-        self.funcao_perda = nn.CrossEntropyLoss()
-        self.otimizador = None
-        self.historico_perdas = []
-
-    def _formatar_tempo(self, segundos):
-        """Formata segundos em HH:MM:SS"""
-        horas = int(segundos // 3600)
-        minutos = int((segundos % 3600) // 60)
-        seg = int(segundos % 60)
-        return f"{horas:02}:{minutos:02}:{seg:02}"
-
-    def configurar_otimizador(self, learning_rate=0.001, weight_decay=0.01):
-        """
-        Configura o otimizador AdamW
-
-        Args:
-            learning_rate (float): Taxa de aprendizado
-            weight_decay (float): Decaimento de peso para regularização
-        """
-        self.otimizador = optim.AdamW(
-            self.modelo.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay
-        )
-
-    def preparar_dados(self, textos, contexto_tamanho):
-        """
-        Prepara os dados de treinamento
-
-        Args:
-            textos (list): Lista de textos para treinamento
-            contexto_tamanho (int): Tamanho do contexto
-
-        Returns:
-            tuple: (X_tensor, Y_tensor) - Tensores preparados
-        """
-        np_x, np_y = self.tokenizer.encode_batch(textos, contexto_tamanho)
-
-        X_tensor = torch.from_numpy(np_x).long()
-        Y_tensor = torch.from_numpy(np_y).long()
-
-        return X_tensor.to(self.device), Y_tensor.to(self.device)
-
-    def treinar(self, textos, contexto_tamanho, num_epocas, batch_size, learning_rate):
-        """
-        Treina o modelo com os dados fornecidos
-
-        Args:
-            textos (list): Lista de textos para treinamento
-            contexto_tamanho (int): Tamanho do contexto
-            num_epocas (int): Número de épocas de treinamento
-            batch_size (int): Tamanho do batch
-            learning_rate (float): Taxa de aprendizado
-        """
-        X_tensor, Y_tensor = self.preparar_dados(textos, contexto_tamanho)
-
-        self.configurar_otimizador(learning_rate)
-
-        print(f"Iniciando treinamento com {len(X_tensor)} exemplos...")
-        print(f"Verificanado se há modelo salvo...")
-
-        if os.path.exists("modelo_checkpoint.pth"):
-            self.carregar_modelo("modelo_checkpoint.pth")
-            print("Modelo carregado com sucesso.")
-        else:
-            print("Nenhum modelo salvo encontrado. Começando treinamento do zero.")
-
-        print(f"Dispositivo: {self.device}")
-
-        self.modelo.train()
-
-        training_start_time = time.time()
-
-        # Acumulação de gradiente para batches maiores
-        passos_acumulacao = 8
-
-        for epoca in range(num_epocas):
-            # Embaralhar dados
-            indices = torch.randperm(len(X_tensor))
-            X_embaralhado = X_tensor[indices]
-            Y_embaralhado = Y_tensor[indices]
-
-            perda_epoca = 0
-            num_batches = 0
-
-            self.otimizador.zero_grad()
-
-            # Treinamento em mini-batches
-            for i in range(0, len(X_embaralhado), batch_size):
-                batch_X = X_embaralhado[i:i+batch_size]
-                batch_Y = Y_embaralhado[i:i+batch_size]
-
-                # Forward pass
-                logits = self.modelo(batch_X)
-                logits_ultimo_token = logits[:, -1, :]  # Apenas o último token
-
-                perda = self.funcao_perda(logits_ultimo_token, batch_Y)
-                perda = perda / passos_acumulacao
-
-                perda.backward()
-
-                perda_epoca += perda.item() * passos_acumulacao
-                num_batches += 1
-                # Backward pass
-                if num_batches % 8 == 0:
-                    self.otimizador.step()
-                    self.otimizador.zero_grad()
-
-                    if num_batches % 500 == 0:
-                        print(f"Epoca {epoca+1}/{num_epocas}, Batch {num_batches}/{len(X_embaralhado)//batch_size}, Perda: {perda.item():.4f}")
-
-            # Calcular perda média da época
-            perda_media = perda_epoca / num_batches
-            self.historico_perdas.append(perda_media)
-
-            # Log progress
-            if epoca % 100 == 0:
-                # --- Lógica de ETA ---
-                tempo_decorrido = time.time() - training_start_time
-                epocas_passadas = epoca + 1
-                tempo_medio_por_epoca = tempo_decorrido / epocas_passadas
-                epocas_restantes = num_epocas - epocas_passadas
-                eta_segundos = tempo_medio_por_epoca * epocas_restantes
-                eta_formatada = self._formatar_tempo(eta_segundos)
-                # --- Fim da Lógica de ETA ---
-
-                # Print com mais detalhes
-                print(f'Época [{epoca+1}/{num_epocas}], Perda: {perda_media:.4f}, ETA: {eta_formatada}')
-            
-            if epoca % 1000 == 0:
-                self.salvar_modelo(f"modelo_checkpoint.pth")
-
-        tempo_total = time.time() - training_start_time
-        print(f"Treinamento concluído. Perda final: {self.historico_perdas[-1]:.4f}")
-        print(f"Tempo total de treinamento: {self._formatar_tempo(tempo_total)}")
-
-    def ajustar_fino(self, textos_novos, contexto_tamanho, num_epocas=1000, batch_size=32):
-        """
-        Ajuste fino do modelo com novos dados
-
-        Args:
-            textos_novos (list): Novos textos para ajuste fino
-            contexto_tamanho (int): Tamanho do contexto
-            num_epocas (int): Número de épocas de ajuste fino
-            batch_size (int): Tamanho do batch
-        """
-        print("\nIniciando ajuste fino...")
-
-        # Preparar novos dados
-        X_novo, Y_novo = self.preparar_dados(textos_novos, contexto_tamanho)
-
-        # Combinar com dados anteriores se existirem
-        if hasattr(self, 'X_anterior') and hasattr(self, 'Y_anterior'):
-            X_combinado = torch.cat([self.X_anterior, X_novo], dim=0)
-            Y_combinado = torch.cat([self.Y_anterior, Y_novo], dim=0)
-        else:
-            X_combinado, Y_combinado = X_novo, Y_novo
-
-        # Salvar dados anteriores para próximas iterações
-        self.X_anterior = X_combinado
-        self.Y_anterior = Y_combinado
-
-        print(f"Ajuste fino com {len(X_combinado)} exemplos totais...")
-
-        self.modelo.train()
         
-        finetune_start_time = time.time()
+        self.model.to(self.device)
+        
+        # Optimizer
+        self.optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay
+        )
+        
+        # Mixed Precision Scaler
+        self.scaler = torch.amp.GradScaler() if self.device.type == 'cuda' else None
+        
+        # State
+        self.global_step = 0
+        self.start_epoch = 0
+        self.loss_history = []
 
-        for epoca in range(num_epocas):
-            # Embaralhar dados
-            indices = torch.randperm(len(X_combinado))
-            X_embaralhado = X_combinado[indices]
-            Y_embaralhado = Y_combinado[indices]
+    def get_scheduler(self, step):
 
-            perda_epoca = 0
-            num_batches = 0
+        """Linear warmup and decay scheduler."""
+        if step < self.args.warmup_steps:
+            return self.args.learning_rate * (step / self.args.warmup_steps)
+        
+        total_decay_steps = 1000000 
+        progress_decay = (step - self.args.warmup_steps) / max(1, total_decay_steps - self.args.warmup_steps)
+        decay_factor = max(0.1, 1.0 - progress_decay)
+        return self.args.learning_rate * decay_factor
 
-            # Ajuste fino em mini-batches
-            for i in range(0, len(X_embaralhado), batch_size):
-                batch_X = X_embaralhado[i:i+batch_size]
-                batch_Y = Y_embaralhado[i:i+batch_size]
-
-                # Forward pass
-                logits = self.modelo(batch_X)
-                logits_ultimo_token = logits[:, -1, :]
-
-                perda = self.funcao_perda(logits_ultimo_token, batch_Y)
-
-                # Backward pass
-                self.otimizador.zero_grad()
-                perda.backward()
-                self.otimizador.step()
-
-                perda_epoca += perda.item()
-                num_batches += 1
-
-            # Calcular perda média da época
-            perda_media = perda_epoca / num_batches
-            self.historico_perdas.append(perda_media)
-
-            # Log progress
-            if epoca % 100 == 0:
-                # --- Lógica de ETA ---
-                tempo_decorrido = time.time() - finetune_start_time
-                epocas_passadas = epoca + 1
-                tempo_medio_por_epoca = tempo_decorrido / epocas_passadas
-                epocas_restantes = num_epocas - epocas_passadas
-                eta_segundos = tempo_medio_por_epoca * epocas_restantes
-                eta_formatada = self._formatar_tempo(eta_segundos)
-                # --- Fim da Lógica de ETA ---
+    def train_epoch(self, dataloader, epoch):
+        self.model.train()
+        total_loss = 0.0
+        current_lr = 0.0
+        
+        progress_bar = tqdm(dataloader, desc=f'Epoch {epoch + 1}', leave=False)
+        
+        for batch_idx, batch in enumerate(progress_bar):
+            inputs = batch.to(self.device)
+            
+            # Forward pass with mixed precision
+            with torch.amp.autocast(device_type=self.device.type, enabled=(self.scaler is not None)):
+                outputs = self.model(inputs)
                 
-                # Print com mais detalhes
-                print(f'Época [{epoca+1}/{num_epocas}], Perda: {perda_media:.4f}, ETA: {eta_formatada}')
+                # Shift logits and labels for causal LM
+                shift_logits = outputs[..., :-1, :].contiguous()
+                shift_labels = inputs[..., 1:].contiguous()
+                
+                loss_fct = nn.CrossEntropyLoss()
+                loss = loss_fct(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1)
+                )
+                
+                # Normalize loss for gradient accumulation
+                loss = loss / self.args.gradient_accumulation_steps
+            
+            # Backward pass
+            if self.scaler:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            
+            # Optimizer Step
+            if (batch_idx + 1) % self.args.gradient_accumulation_steps == 0:
+                current_lr = self.get_scheduler(self.global_step)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = current_lr
+                
+                if self.scaler:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+                
+                self.optimizer.zero_grad()
+                self.global_step += 1
+                
+                # Logging (wandb or others could go here)
+            
+            # Accumulate loss for display
+            loss_item = loss.item() * self.args.gradient_accumulation_steps
+            total_loss += loss_item
+            avg_loss = total_loss / (batch_idx + 1)
+            
+            progress_bar.set_postfix({'loss': f'{avg_loss:.4f}', 'lr': f'{current_lr:.2e}'})
+            
+            # Checkpoint capability inside epoch
+            if self.global_step > 0 and self.global_step % self.args.save_steps == 0 and \
+               (batch_idx + 1) % self.args.gradient_accumulation_steps == 0:
+                self.save_checkpoint(f'checkpoint_step_{self.global_step}')
+                
+        return avg_loss
 
-        tempo_total = time.time() - finetune_start_time
-        print(f"Ajuste fino concluído. Perda final: {self.historico_perdas[-1]:.4f}")
-        print(f"Tempo total de ajuste fino: {self._formatar_tempo(tempo_total)}")
+    def train(self, dataloader, epochs):
+        print(f"Starting training on {self.device}...")
+        
+        for epoch in range(self.start_epoch, epochs):
+            start_time = time.time()
+            
+            avg_loss = self.train_epoch(dataloader, epoch)
+            self.loss_history.append(avg_loss)
+            
+            epoch_time = time.time() - start_time
+            print(f'Epoch {epoch + 1}/{epochs} Completed - Avg Loss: {avg_loss:.4f} - Time: {epoch_time:.2f}s')
+            
+            self.save_checkpoint(f'checkpoint_epoch_{epoch + 1}')
 
-    def salvar_modelo(self, caminho):
-        """Salva o modelo treinado"""
+    def save_checkpoint(self, name):
+        checkpoint_dir = Path(self.args.output_dir) / name
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        model_path = checkpoint_dir / 'model.pt'
+        
+        # Save model config explicitly if available
+        model_config = getattr(self.model, 'cfg', None)
+        model_config_dict = model_config.__dict__ if model_config else {}
+
         torch.save({
-            'model_state_dict': self.modelo.state_dict(),
-            'optimizer_state_dict': self.otimizador.state_dict() if self.otimizador else None,
-            'historico_perdas': self.historico_perdas,
-        }, caminho)
-        print(f"Modelo salvo em: {caminho}")
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'step': self.global_step,
+            'config': model_config_dict
+        }, model_path)
+        
+        # Save training args
+        config_path = checkpoint_dir / 'train_config.json'
+        with open(config_path, 'w', encoding='utf-8') as f:
 
-    def carregar_modelo(self, caminho):
-        """Carrega um modelo salvo"""
-        checkpoint = torch.load(caminho, map_location=self.device)
-        self.modelo.load_state_dict(checkpoint['model_state_dict'])
-        if checkpoint['optimizer_state_dict'] and self.otimizador:
-            self.otimizador.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.historico_perdas = checkpoint.get('historico_perdas', [])
-        print(f"Modelo carregado de: {caminho}")
+            # Filter non-serializable args if any, but vars() usually ok for argparse
+            json.dump(vars(self.args), f, indent=2, ensure_ascii=False)
+            
+        print(f"Checkpoint saved at {checkpoint_dir}")
 
-    def get_historico_perdas(self):
-        """Retorna o histórico de perdas"""
-        return self.historico_perdas.copy()
+    def load_checkpoint(self, checkpoint_path):
+        
+        """Resumes training from a checkpoint."""
+        print(f"Loading checkpoint from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+        self.global_step = checkpoint.get('step', 0)
+        return self.global_step
