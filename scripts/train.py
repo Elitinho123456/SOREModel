@@ -22,8 +22,8 @@ sys.path.insert(0, str(project_root))
 
 from src import Trainer, TextDataset
 from src.data.dataset import InstructionDataset
-# Explicitly import v4
-from src.models.soreModel_v4 import SOREModel_v4, ModelConfig as ConfigV4
+# Explicitly import v4.1
+from src.models.soreModel_v4_1 import SOREModel_v4_1, ModelConfig as ConfigV4_1
 from src.models.soreModel_v3 import SOREModel_v3, ModelConfig as ConfigV3
 from config import TRAINING_CONFIG
 
@@ -58,7 +58,7 @@ def parse_args():
     parser.add_argument('--min_delta', type=float, default=TRAINING_CONFIG['min_delta'])
     
     # Model Configs
-    parser.add_argument('--model_version', type=str, default='v4', choices=['v3', 'v4'])
+    parser.add_argument('--model_version', type=str, default='v4_1', choices=['v3', 'v4', 'v4_1'])
     parser.add_argument('--embed_dim', type=int, default=768)
     parser.add_argument('--num_heads', type=int, default=12)
     parser.add_argument('--num_layers', type=int, default=12)
@@ -144,7 +144,12 @@ def main():
         )
     
     print(f"Configuring SOREModel {args.model_version}...")
-    if args.model_version == 'v4':
+    if args.model_version == 'v4_1':
+        ConfigClass = ConfigV4_1
+        ModelClass = SOREModel_v4_1
+    elif args.model_version == 'v4':
+        # Fallback to v4 if v4_1 not available
+        from src.models.soreModel_v4 import SOREModel_v4, ModelConfig as ConfigV4
         ConfigClass = ConfigV4
         ModelClass = SOREModel_v4
     else:

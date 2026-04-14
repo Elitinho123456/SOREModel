@@ -15,7 +15,7 @@ import torch
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.models.soreModel_v4 import SOREModel_v4, ModelConfig
+from src.models.soreModel_v4_1 import SOREModel_v4_1, ModelConfig
 from src.core.teacher_client import get_teacher_client
 from src.training.distillation_trainer import DistillationTrainer
 from src.data.dataset import TextDataset, InstructionDataset # Use appropriate dataset
@@ -86,7 +86,7 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
     
     # Init Student
-    print("Initializing Student (SOREModel v4)...")
+    print("Initializing Student (SOREModel v4.1)...")
     config = ModelConfig(
         vocab_size=len(tokenizer),
         context_size=args.context_size,
@@ -94,7 +94,7 @@ def main():
         num_layers=8,  # Slightly smaller for student? or standard v4 size
         num_heads=8
     )
-    student_model = SOREModel_v4(config)
+    student_model = SOREModel_v4_1(config)
     
     # Trainer
     trainer = DistillationTrainer(student_model, tokenizer, teacher, args)

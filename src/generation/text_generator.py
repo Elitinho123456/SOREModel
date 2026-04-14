@@ -37,7 +37,16 @@ class TextGenerator:
         Returns:
             str: Texto gerado completo
         """
+        # Tenta usar o método otimizado generate() do modelo quando disponível
+        if hasattr(self.modelo, 'generate'):
+            try:
+                return self._gerar_texto_otimizado(contexto_inicial, max_length, temperature, top_k, top_p)
+            except Exception as e:
+                print(f"Aviso: Falha na geração otimizada: {e}. Usando fallback...")
+
+        # Fallback: geração manual com KV cache
         contexto_atual = contexto_inicial
+        past_kv = None
 
         with torch.no_grad():
             for _ in range(max_length):
@@ -71,8 +80,13 @@ class TextGenerator:
                 # Converter para tensor
                 tensor_entrada = torch.tensor([contexto_codificado], dtype=torch.long).to(self.device)
 
-                # Fazer previsão
-                logits = self.modelo(tensor_entrada)
+                # Fazer previsão com KV cache
+                if past_kv is None:
+                    logits, past_kv = self.modelo(tensor_entrada, use_cache=True)
+                else:
+                    # Apenas último token
+                    ultimo_token = tensor_entrada[:, -1:]
+                    logits, past_kv = self.modelo(ultimo_token, past_key_values=past_kv, use_cache=True)
                 logits_ultimo_token = logits[:, -1, :]
 
                 # Aplicar temperatura
@@ -147,7 +161,7 @@ class TextGenerator:
                 encoding = self.tokenizer.encode(contexto_inicial)
                 encoded_context = encoding.ids
             else:
-                encoding = self.tokenizer(contexto_atual)
+                encoding = self.tokenizer(contexto_inicial)
                 encoded_context = encoding.input_ids
         except Exception as e:
             print(f"Erro ao codificar o texto: {e}")
