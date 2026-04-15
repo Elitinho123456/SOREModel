@@ -171,11 +171,15 @@ def main():
     trainer = Trainer(model, tokenizer, args)
     
     if args.resume_from_checkpoint:
-        trainer.load_checkpoint(args.resume_from_checkpoint)
-        
+        # Accept either a directory (slot folder) or a direct .pt path
+        resume_path = args.resume_from_checkpoint
+        if os.path.isdir(resume_path):
+            resume_path = os.path.join(resume_path, 'model.pt')
+        trainer.load_checkpoint(resume_path)
+
     trainer.train(train_loader, args.epochs, val_loader=val_loader)
-    
-    trainer.save_checkpoint(f'final_model_{args.stage}')
+    # No extra save needed — epoch_start / best_model / auto_checkpoint
+    # slots are managed automatically throughout training.
 
 if __name__ == '__main__':
     main()
