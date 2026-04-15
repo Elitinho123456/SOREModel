@@ -3,7 +3,7 @@ SOREModel - Simple Open-Source Recurrent/Transformer Model
 """
 
 from .core import Tokenizer
-from .models import SOREModel_v3
+from .models import SOREModel, SOREModel_v3, SOREModel_v4_1
 from .training import Trainer
 from .data.dataset import TextDataset
 from .generation import TextGenerator
@@ -13,7 +13,9 @@ __author__ = "SOREModel Team"
 
 __all__ = [
     'Tokenizer',
+    'SOREModel',
     'SOREModel_v3',
+    'SOREModel_v4_1',
     'Trainer',
     'TextDataset',
     'TextGenerator'

@@ -3,7 +3,9 @@ Módulo de Geração para o SOREModel
 Implementa funcionalidades para geração de texto usando o modelo treinado
 """
 
+import inspect
 import torch
+
 
 class TextGenerator:
     """Classe para geração de texto usando o modelo SOREModel"""
@@ -19,11 +21,80 @@ class TextGenerator:
         """
         self.modelo = modelo
         self.tokenizer = tokenizer
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.modelo.to(self.device)
         self.modelo.eval()  # Coloca em modo de avaliação
 
-    def gerar_texto(self, contexto_inicial, max_length=50, temperature=1.0, top_k=None, top_p=None):
+    def _encode_text(self, text):
+        """Converte texto em lista de token ids para tokenizers HF e customizados."""
+        if hasattr(self.tokenizer, "encode"):
+            try:
+                encoded = self.tokenizer.encode(text, add_special_tokens=False)
+            except TypeError:
+                encoded = self.tokenizer.encode(text)
+
+            if hasattr(encoded, "ids"):
+                return encoded.ids
+            return encoded
+
+        try:
+            encoded = self.tokenizer(text, add_special_tokens=False)
+        except TypeError:
+            encoded = self.tokenizer(text)
+
+        if isinstance(encoded, dict):
+            token_ids = encoded.get("input_ids", [])
+        else:
+            token_ids = getattr(encoded, "input_ids", [])
+
+        if token_ids and isinstance(token_ids[0], list):
+            token_ids = token_ids[0]
+
+        return token_ids
+
+    def _decode_tokens(self, token_ids):
+        try:
+            return self.tokenizer.decode(token_ids, skip_special_tokens=False)
+        except TypeError:
+            return self.tokenizer.decode(token_ids)
+
+    def _gerar_texto_otimizado(
+        self, contexto_inicial, max_length, temperature, top_k, top_p
+    ):
+        token_ids = self._encode_text(contexto_inicial)
+        if not token_ids:
+            return contexto_inicial
+
+        model_config = getattr(self.modelo, "cfg", None)
+        max_context = getattr(model_config, "context_size", 1024)
+        token_ids = token_ids[-max_context:]
+
+        entrada = torch.tensor([token_ids], dtype=torch.long, device=self.device)
+
+        generate_signature = inspect.signature(self.modelo.generate)
+        generate_params = set(generate_signature.parameters)
+
+        kwargs = {
+            "max_new_tokens": max_length,
+            "temperature": temperature,
+        }
+        if top_k is not None and "top_k" in generate_params:
+            kwargs["top_k"] = int(top_k)
+        if top_p is not None and "top_p" in generate_params:
+            kwargs["top_p"] = float(top_p)
+
+        generated = self.modelo.generate(entrada, **kwargs)
+        if isinstance(generated, tuple):
+            generated = generated[0]
+
+        generated_tokens = generated[0].tolist()
+        return self._decode_tokens(generated_tokens)
+
+    def gerar_texto(
+        self, contexto_inicial, max_length=50, temperature=1.0, top_k=None, top_p=None
+    ):
         """
         Gera texto baseado no contexto inicial
 
@@ -38,9 +109,11 @@ class TextGenerator:
             str: Texto gerado completo
         """
         # Tenta usar o método otimizado generate() do modelo quando disponível
-        if hasattr(self.modelo, 'generate'):
+        if hasattr(self.modelo, "generate"):
             try:
-                return self._gerar_texto_otimizado(contexto_inicial, max_length, temperature, top_k, top_p)
+                return self._gerar_texto_otimizado(
+                    contexto_inicial, max_length, temperature, top_k, top_p
+                )
             except Exception as e:
                 print(f"Aviso: Falha na geração otimizada: {e}. Usando fallback...")
 
@@ -52,14 +125,7 @@ class TextGenerator:
             for _ in range(max_length):
                 # Codificar o texto usando o tokenizer
                 try:
-                    # Tenta usar o método encode do tokenizer (para tokenizers do HuggingFace)
-                    if hasattr(self.tokenizer, 'encode'):
-                        encoding = self.tokenizer.encode(contexto_atual)
-                        contexto_codificado = encoding.ids
-                    # Se não tiver encode, tenta chamar diretamente (para compatibilidade com versões mais antigas)
-                    else:
-                        encoding = self.tokenizer(contexto_atual)
-                        contexto_codificado = encoding.input_ids
+                    contexto_codificado = self._encode_text(contexto_atual)
                 except Exception as e:
                     print(f"Erro ao codificar o texto: {e}")
                     break
@@ -68,17 +134,19 @@ class TextGenerator:
                     break
 
                 # Usar apenas os últimos tokens se o contexto for muito longo
-                max_context = getattr(self.modelo, 'cfg', None)
-                if max_context is not None and hasattr(max_context, 'context_size'):
+                max_context = getattr(self.modelo, "cfg", None)
+                if max_context is not None and hasattr(max_context, "context_size"):
                     max_context = max_context.context_size
                 else:
                     max_context = 1024  # Valor padrão
-                
+
                 if len(contexto_codificado) > max_context:
                     contexto_codificado = contexto_codificado[-max_context:]
 
                 # Converter para tensor
-                tensor_entrada = torch.tensor([contexto_codificado], dtype=torch.long).to(self.device)
+                tensor_entrada = torch.tensor(
+                    [contexto_codificado], dtype=torch.long
+                ).to(self.device)
 
                 # Fazer previsão com KV cache
                 if past_kv is None:
@@ -86,7 +154,9 @@ class TextGenerator:
                 else:
                     # Apenas último token
                     ultimo_token = tensor_entrada[:, -1:]
-                    logits, past_kv = self.modelo(ultimo_token, past_key_values=past_kv, use_cache=True)
+                    logits, past_kv = self.modelo(
+                        ultimo_token, past_key_values=past_kv, use_cache=True
+                    )
                 logits_ultimo_token = logits[:, -1, :]
 
                 # Aplicar temperatura
@@ -95,21 +165,32 @@ class TextGenerator:
 
                 # Aplicar top-k filtering
                 if top_k is not None:
-                    indices_to_remove = logits_ultimo_token < torch.topk(logits_ultimo_token, top_k)[0][..., -1, None]
-                    logits_ultimo_token[indices_to_remove] = float('-inf')
+                    indices_to_remove = (
+                        logits_ultimo_token
+                        < torch.topk(logits_ultimo_token, top_k)[0][..., -1, None]
+                    )
+                    logits_ultimo_token[indices_to_remove] = float("-inf")
 
                 # Aplicar top-p (nucleus) filtering
                 if top_p is not None:
-                    sorted_logits, sorted_indices = torch.sort(logits_ultimo_token, descending=True)
-                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                    sorted_logits, sorted_indices = torch.sort(
+                        logits_ultimo_token, descending=True
+                    )
+                    cumulative_probs = torch.cumsum(
+                        torch.softmax(sorted_logits, dim=-1), dim=-1
+                    )
 
                     # Remove tokens com probabilidade cumulativa acima de top_p
                     sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
+                        ..., :-1
+                    ].clone()
                     sorted_indices_to_remove[..., 0] = 0
 
-                    indices_to_remove = sorted_indices_to_remove.scatter(dim=1, index=sorted_indices, src=sorted_indices_to_remove)
-                    logits_ultimo_token[indices_to_remove] = float('-inf')
+                    indices_to_remove = sorted_indices_to_remove.scatter(
+                        dim=1, index=sorted_indices, src=sorted_indices_to_remove
+                    )
+                    logits_ultimo_token[indices_to_remove] = float("-inf")
 
                 # Converter para probabilidades
                 probs = torch.softmax(logits_ultimo_token, dim=-1)
@@ -118,15 +199,23 @@ class TextGenerator:
                 next_token_idx = torch.multinomial(probs, num_samples=1).item()
 
                 # Decodificar e adicionar ao contexto
+                # Parar se gerar token de fim pelo ID
+                if (
+                    hasattr(self.tokenizer, "eos_token_id")
+                    and next_token_idx == self.tokenizer.eos_token_id
+                ):
+                    break
+
+                # Decodificar e adicionar ao contexto
                 try:
                     # Usa o método de decodificação do tokenizador, que é mais robusto
-                    token_gerado = self.tokenizer.decode([next_token_idx], skip_special_tokens=False)
+                    token_gerado = self._decode_tokens([next_token_idx])
 
                     # O tokenizador ByteLevel BPE pode gerar o prefixo 'Ġ' para espaços.
                     # Esta lógica ajuda a formatar o texto de forma mais limpa.
-                    if token_gerado.startswith('Ġ'):
+                    if token_gerado.startswith("Ġ"):
                         # Adiciona um espaço e o resto do token
-                        contexto_atual += ' ' + token_gerado[1:]
+                        contexto_atual += " " + token_gerado[1:]
                     else:
                         contexto_atual += token_gerado
 
@@ -134,8 +223,8 @@ class TextGenerator:
                     print(f"\nERRO ao decodificar o token {next_token_idx}: {e}")
                     break
 
-                # Parar se gerar token de fim (se existir)
-                if token_gerado in ['\n', '\0']:
+                # Parar se gerar token de fim (fallback em texto)
+                if token_gerado in ["\n", "\0", self.tokenizer.eos_token]:
                     break
 
         return contexto_atual
@@ -157,12 +246,7 @@ class TextGenerator:
 
         # Codificar contexto inicial
         try:
-            if hasattr(self.tokenizer, 'encode'):
-                encoding = self.tokenizer.encode(contexto_inicial)
-                encoded_context = encoding.ids
-            else:
-                encoding = self.tokenizer(contexto_inicial)
-                encoded_context = encoding.input_ids
+            encoded_context = self._encode_text(contexto_inicial)
         except Exception as e:
             print(f"Erro ao codificar o texto: {e}")
             return contexto_inicial
@@ -173,20 +257,26 @@ class TextGenerator:
         # Configurações úteis
         device = self.device
         model = self.modelo
-        
+
         # Obter tamanho máximo do contexto da configuração do modelo
-        model_config = getattr(model, 'cfg', None)
-        if model_config is not None and hasattr(model_config, 'context_size'):
+        model_config = getattr(model, "cfg", None)
+        if model_config is not None and hasattr(model_config, "context_size"):
             max_context = model_config.context_size
         else:
             max_context = 1024  # Valor padrão
-            
+
         # Obter IDs especiais do tokenizer
-        pad_id = getattr(self.tokenizer, 'pad_token_id', 0)
-        eos_id = getattr(self.tokenizer, 'eos_token_id', None)
+        pad_id = getattr(self.tokenizer, "pad_token_id", 0)
+        eos_id = getattr(self.tokenizer, "eos_token_id", None)
 
         # Inicializar beams como lista de (token_list, score, finished_flag)
-        beams = [(encoded_context[:max_context] if max_context else encoded_context, 0.0, False)]
+        beams = [
+            (
+                encoded_context[:max_context] if max_context else encoded_context,
+                0.0,
+                False,
+            )
+        ]
 
         with torch.no_grad():
             for _ in range(max_length):
@@ -203,8 +293,12 @@ class TextGenerator:
                 # Se não houver beams para expandir, terminar
                 if not to_expand_idx:
                     # escolher o melhor entre os finalizados
-                    best = max(finished_candidates, key=lambda x: x[1]) if finished_candidates else beams[0]
-                    return self.tokenizer.decodificar(best[0])
+                    best = (
+                        max(finished_candidates, key=lambda x: x[1])
+                        if finished_candidates
+                        else beams[0]
+                    )
+                    return self._decode_tokens(best[0])
 
                 # Preparar batch das sequências a expandir
                 batch_seqs = [beams[i][0] for i in to_expand_idx]
@@ -219,10 +313,17 @@ class TextGenerator:
                     batch_max_len = max(lengths)
 
                 # Criar tensor padded (direção: right padding)
-                batch_tensor = torch.full((len(batch_seqs), batch_max_len), pad_id, dtype=torch.long, device=device)
+                batch_tensor = torch.full(
+                    (len(batch_seqs), batch_max_len),
+                    pad_id,
+                    dtype=torch.long,
+                    device=device,
+                )
                 for i, s in enumerate(batch_seqs):
                     if len(s) > 0:
-                        batch_tensor[i, : len(s)] = torch.tensor(s, dtype=torch.long, device=device)
+                        batch_tensor[i, : len(s)] = torch.tensor(
+                            s, dtype=torch.long, device=device
+                        )
 
                 # Chamar o modelo em batch
                 logits = model(batch_tensor)  # (batch, seq_len, vocab)
@@ -235,7 +336,9 @@ class TextGenerator:
                 log_probs = torch.log_softmax(last_logits, dim=-1)  # (batch, vocab)
 
                 # Pegar topk por sequência (beam_width)
-                topk_vals, topk_inds = torch.topk(log_probs, k=beam_width, dim=-1)  # ambos (batch, beam_width)
+                topk_vals, topk_inds = torch.topk(
+                    log_probs, k=beam_width, dim=-1
+                )  # ambos (batch, beam_width)
 
                 # Construir candidatos: combinar beams finalizados + expansões
                 candidates = []
@@ -254,16 +357,13 @@ class TextGenerator:
                         # verificar se este token finalizou a sequência
                         is_finished = False
                         if eos_id is not None:
-                            is_finished = (token_id == eos_id)
+                            is_finished = token_id == eos_id
                         else:
                             # fallback: decodificar token isolado e checar caracteres de parada
                             try:
-                                if hasattr(self.tokenizer, 'decode'):
-                                    token_str = self.tokenizer.decode([token_id])
-                                else:
-                                    token_str = self.tokenizer.decode([token_id])
-                                
-                                if token_str in ['\n', '\0']:
+                                token_str = self._decode_tokens([token_id])
+
+                                if token_str in ["\n", "\0"]:
                                     is_finished = True
                             except Exception as e:
                                 print(f"Erro ao decodificar token: {e}")
@@ -283,10 +383,7 @@ class TextGenerator:
         # Retornar a melhor sequência encontrada
         best_seq = max(beams, key=lambda x: x[1])[0]
         try:
-            if hasattr(self.tokenizer, 'decode'):
-                return self.tokenizer.decode(best_seq)
-            else:
-                return self.tokenizer.decode(best_seq)
+            return self._decode_tokens(best_seq)
         except Exception as e:
             print(f"Erro ao decodificar a sequência: {e}")
             return ""
@@ -304,7 +401,9 @@ class TextGenerator:
         """
         return self.gerar_texto(texto_incompleto, max_length=max_completar)
 
-    def gerar_variacoes(self, contexto_inicial, num_variacoes=5, max_length=30, temperature=1.2):
+    def gerar_variacoes(
+        self, contexto_inicial, num_variacoes=5, max_length=30, temperature=1.2
+    ):
         """
         Gera múltiplas variações de um contexto
 
@@ -323,7 +422,7 @@ class TextGenerator:
                 contexto_inicial,
                 max_length=max_length,
                 temperature=temperature,
-                top_p=0.9  # Para manter coerência
+                top_p=0.9,  # Para manter coerência
             )
             variacoes.append(variacao)
 
