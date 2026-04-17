@@ -1,0 +1,16 @@
+# Usa uma imagem oficial leve de Python para alta performance e low-overhead
+FROM python:3.9-slim
+
+# Impede escrita de compilações pyc
+ENV PYTHONDONTWRITEBYTECODE=1
+# Mantém o log do python sincronizado
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /sandbox
+
+# Executa como usuário sem privilégios para mitigar jailbreaks (Sandboxing Seguro)
+RUN groupadd -r sandboxuser && useradd -r -g sandboxuser sandboxuser
+USER sandboxuser
+
+# Permite injeção de parâmetros (comandos que a IA testará)
+ENTRYPOINT ["python"]
