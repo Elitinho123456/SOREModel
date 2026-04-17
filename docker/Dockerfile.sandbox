@@ -1,16 +1,28 @@
 # Usa uma imagem oficial leve de Python para alta performance e low-overhead
-FROM python:3.9-slim
+# python:3.11-slim em vez de 3.9 — Python 3.11 é ~25% mais rápido em benchmark
+FROM python:3.11-slim
 
-# Impede escrita de compilações pyc
+# Bloqueia escrita de bytecache e força log síncrono
 ENV PYTHONDONTWRITEBYTECODE=1
-# Mantém o log do python sincronizado
 ENV PYTHONUNBUFFERED=1
+# Impede que o Python tente escrever arquivos de stat de performance
+ENV PYTHONSTARTUP=""
 
 WORKDIR /sandbox
 
-# Executa como usuário sem privilégios para mitigar jailbreaks (Sandboxing Seguro)
-RUN groupadd -r sandboxuser && useradd -r -g sandboxuser sandboxuser
+# Instala apenas dependências de ciência de dados que os experimentos possam precisar
+# Sem pip install de rede durante o run (imagem já vem com tudo)
+COPY docker/requirements.sandbox.txt /tmp/requirements.sandbox.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.sandbox.txt
+
+# Cria usuário sem privilégios — o AZR nunca deve rodar como root
+RUN groupadd -r sandboxuser && useradd -r -g sandboxuser -d /sandbox sandboxuser \
+    && chown -R sandboxuser:sandboxuser /sandbox
+
+# Captura de sinal SIGTERM para garantir limpeza graciosa
+STOPSIGNAL SIGTERM
+
 USER sandboxuser
 
-# Permite injeção de parâmetros (comandos que a IA testará)
+# O script é injetado via volume montado em /sandbox pelo SandboxManager
 ENTRYPOINT ["python"]

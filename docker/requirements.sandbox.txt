@@ -1,0 +1,4 @@
+# Dependências pré-instaladas na imagem sandbox
+# NÃO incluir libs de rede (requests, urllib3 etc.) — sandbox é airgapped
+numpy>=1.24.0
+torch>=2.0.0
