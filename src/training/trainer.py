@@ -99,7 +99,7 @@ class Trainer:
                 f, indent=2,
             )
 
-        print(f"[Checkpoint] '{slot}' saved → {checkpoint_dir}")
+        print(f"[Checkpoint] '{slot}' saved -> {checkpoint_dir}")
 
     def load_checkpoint(self, checkpoint_path: str):
         """

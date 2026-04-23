@@ -24,6 +24,7 @@ Qual modo de distilacao usar com cada provider:
 """
 import os
 import json
+import time
 import logging
 import requests
 from abc import ABC, abstractmethod
@@ -138,7 +139,13 @@ class OpenAITeacherClient(TeacherClient):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class GeminiTeacherClient(TeacherClient):
-    """Teacher via Google Gemini API (cloud)."""
+    """Teacher via Google Gemini API (cloud).
+
+    Suporte a chave gratuita:
+      - Limite: ~15 req/min, 1500 req/dia (gemini-2.0-flash)
+      - Ao receber 429 (rate limit), faz retry automatico com backoff exponencial.
+      - max_retries=5 com backoff de 2^attempt * base_delay (padrao: ate ~4 min).
+    """
 
     _BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -147,10 +154,14 @@ class GeminiTeacherClient(TeacherClient):
         api_key: str,
         model_name: str = "gemini-2.0-flash",
         timeout: int = _DEFAULT_TIMEOUT,
+        max_retries: int = 5,
+        base_delay: float = 15.0,  # segundos — compativel com limite de 15 rpm
     ):
         self.api_key = api_key
         self.model_name = model_name
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.base_delay = base_delay
         self._url = f"{self._BASE}/{model_name}:generateContent"
 
     def generate(
@@ -170,22 +181,65 @@ class GeminiTeacherClient(TeacherClient):
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
-        try:
-            resp = requests.post(
-                f"{self._url}?key={self.api_key}",
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            cands = data.get("candidates", [])
-            if cands and "content" in cands[0]:
-                return cands[0]["content"]["parts"][0]["text"]
-            return ""
-        except Exception as e:
-            log.error(f"[GeminiTeacherClient] generate() falhou: {e}")
-            return ""
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = requests.post(
+                    f"{self._url}?key={self.api_key}",
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=self.timeout,
+                )
+
+                # Rate limit (quota gratuita esgotada temporariamente)
+                if resp.status_code == 429:
+                    wait = self.base_delay * (2 ** attempt)
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        wait = max(wait, float(retry_after))
+                    log.warning(
+                        f"[GeminiTeacherClient] 429 Rate Limit — aguardando {wait:.0f}s "
+                        f"(tentativa {attempt + 1}/{self.max_retries})..."
+                    )
+                    time.sleep(wait)
+                    continue
+
+                # Quota diaria esgotada — nao adianta tentar de novo agora
+                if resp.status_code == 403:
+                    log.error(
+                        "[GeminiTeacherClient] 403 Forbidden — quota diaria possivelmente esgotada. "
+                        "Verifique em: https://aistudio.google.com/u/0/plan_information"
+                    )
+                    return ""
+
+                resp.raise_for_status()
+                data = resp.json()
+                cands = data.get("candidates", [])
+                if cands and "content" in cands[0]:
+                    return cands[0]["content"]["parts"][0]["text"]
+                return ""
+
+            except requests.Timeout:
+                wait = self.base_delay * (2 ** attempt)
+                log.warning(
+                    f"[GeminiTeacherClient] Timeout ({self.timeout}s) — aguardando {wait:.0f}s "
+                    f"(tentativa {attempt + 1}/{self.max_retries})..."
+                )
+                if attempt < self.max_retries:
+                    time.sleep(wait)
+                else:
+                    log.error("[GeminiTeacherClient] Maximo de tentativas atingido apos timeouts.")
+                    return ""
+
+            except requests.ConnectionError as e:
+                log.error(f"[GeminiTeacherClient] Erro de conexao: {e}")
+                return ""
+
+            except Exception as e:
+                log.error(f"[GeminiTeacherClient] generate() falhou: {e}")
+                return ""
+
+        log.error("[GeminiTeacherClient] Maximo de tentativas atingido (rate limit persistente).")
+        return ""
 
     def get_logits(self, prompt: str) -> Optional[List[float]]:
         return None  # Gemini API nao expoe logits brutos
